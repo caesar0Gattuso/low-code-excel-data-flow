@@ -1,0 +1,90 @@
+---
+description: API 与业务层设计规范 — Proto 字段类型、Enum 设计、Biz 层签名与返回值
+alwaysApply: false
+globs:
+  - "api/**/*.proto"
+  - "internal/**/service/*.go"
+  - "internal/**/biz/*.go"
+---
+
+# API 与业务层设计规范
+
+Proto 定义是服务契约的单一事实来源，biz 层是业务逻辑的承载层。两者的设计质量直接影响类型安全、可维护性和上下游代码质量。
+
+---
+
+## 一、Proto 设计
+
+### 1. 字段类型选择检查清单
+
+新增或修改 proto message 字段时，逐条检查：
+
+**必须用 enum** — 满足任一条件：
+
+- [ ] 值是**有限的、可枚举的**（如认证方式、渠道类型、状态码）
+- [ ] biz 层会对该字段做 **switch/条件分支**
+- [ ] 无效值必须被拒绝（配合 PGV `defined_only: true`）
+- [ ] 值与其他 enum 存在映射关系
+
+**应该用 string** — 值是开放集合或由外部系统定义。
+
+**灰色地带** — 默认用 enum。从 enum 放宽到 string 是兼容变更，反过来不是。
+
+### 2. Enum 设计规范
+
+**命名**：枚举名 + 下划线 + 值名（避免 protobuf 全局命名空间冲突）。
+
+**零值**：每个 enum 必须有 `XXX_UNSPECIFIED = 0`。biz 层对零值拒绝请求，不猜测默认值。
+
+**PGV 校验**：客户端传入的 enum 字段添加 `defined_only`。
+
+### 3. Gateway 层 Enum 映射
+
+如果项目有 Gateway 层（BFF），Gateway proto 定义独立 enum，与内部服务 enum **数值对齐**。Gateway handler 通过 int32 强转映射。
+
+> 注意：项目应在 ARCHITECTURE.md 中约定 Gateway enum 的命名前缀规则。
+
+---
+
+## 二、Biz 层接口设计
+
+### 4. 直接使用 Proto Enum 类型
+
+biz 层直接使用 proto 生成的 enum 类型，不自定义常量或使用裸 int/string。
+
+**方法签名规则**：来源于 proto enum 的参数**必须使用 proto enum 类型**，禁止降级为 int32/string。
+
+**机械检查**：service → biz 调用处出现 `int32(req.GetXxx())` 或 `string(req.GetXxx())`，说明 biz 签名需要修正。正确状态是 service 层直接传 `req.GetXxx()`，零转换。
+
+**存储边界**：data 层在存储边界做 `int(enumVal)` ↔ `EnumType(intVal)` 转换，存储层保持 int。
+
+### 5. 返回值封装
+
+biz 层方法返回值（不含 error）**超过 3 个时，必须封装为 struct**。
+
+**机械检查**：
+- return 语句中出现 **3 个以上零值**，说明需要封装
+- 多个方法返回**相同的字段集合**，必须共用同一个 result struct
+
+**为什么重要**：
+- error return 从 N 个零值简化为 `return nil, err`
+- 新增返回字段只改 struct 定义，不影响所有 return 语句和调用方
+- 调用方用 `result.Field` 而非位置解构，可读性更高
+
+---
+
+## 三、触发条件
+
+- 创建或修改 `.proto` 文件
+- 新增 biz 层方法或修改方法签名
+- 讨论 API 设计方案时
+- Code review 发现：biz 层对 string/int 做 switch、service→biz 调用有类型强转、return 语句有大量零值
+
+---
+
+## 四、历史教训
+
+> 项目应在此处记录本项目的相关教训，例如：
+> - 某字段最初为 string，biz 层做 switch 后重构为 enum
+> - biz 签名用 int32，service 和 biz 层来回强转
+> - 多个方法 8 个返回值，proto 字段 1:1 映射为裸返回值
