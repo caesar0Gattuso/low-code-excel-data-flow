@@ -8,15 +8,27 @@ export function parseExcelFile(file: File): Promise<Record<string, DataTable>> {
     reader.onload = (e) => {
       try {
         const data = new Uint8Array(e.target?.result as ArrayBuffer)
-        const workbook = XLSX.read(data, { type: 'array' })
+        const workbook = XLSX.read(data, { type: 'array', cellDates: true })
         const result: Record<string, DataTable> = {}
 
         for (const sheetName of workbook.SheetNames) {
           const sheet = workbook.Sheets[sheetName]
           const jsonRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet)
-          const columns =
-            jsonRows.length > 0 ? Object.keys(jsonRows[0]) : []
-          result[sheetName] = { columns, rows: jsonRows }
+          const rows = jsonRows.map((row) => {
+            const out: Record<string, unknown> = {}
+            for (const [k, v] of Object.entries(row)) {
+              if (v instanceof Date) {
+                out[k] = formatDate(v)
+              } else if (typeof v === 'string' && /^\d{4}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}(:\d{2})?/.test(v)) {
+                out[k] = v.slice(0, 10)
+              } else {
+                out[k] = v
+              }
+            }
+            return out
+          })
+          const columns = rows.length > 0 ? Object.keys(rows[0]) : []
+          result[sheetName] = { columns, rows }
         }
 
         resolve(result)
@@ -53,6 +65,13 @@ export function downloadTierTemplate() {
     { '阶梯规则': { columns: ['min', 'max', 'value'], rows } },
     '阶梯规则模板.xlsx',
   )
+}
+
+function formatDate(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
 }
 
 export function getSheetNames(file: File): Promise<string[]> {

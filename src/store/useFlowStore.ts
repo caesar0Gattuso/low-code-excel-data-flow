@@ -20,8 +20,10 @@ export interface FlowState {
   inputDataMap: Record<string, DataTable>
   /** ExcelInput 节点 id -> 该文件的所有 Sheet 数据 */
   excelSheetsMap: Record<string, Record<string, DataTable>>
-  /** 执行后，每个节点的预览 */
+  /** 执行后，每个节点的输出预览 */
   previewMap: Record<string, DataTable>
+  /** 执行后，每个节点的输入预览 */
+  inputPreviewMap: Record<string, DataTable>
   /** 执行后，输出节点的最终结果 */
   outputMap: Record<string, DataTable>
   isExecuting: boolean
@@ -36,7 +38,7 @@ export interface FlowState {
   selectNode: (nodeId: string | null) => void
   setInputData: (nodeId: string, data: DataTable) => void
   setExcelSheets: (nodeId: string, sheets: Record<string, DataTable>) => void
-  setExecutionResults: (previews: Record<string, DataTable>, outputs: Record<string, DataTable>) => void
+  setExecutionResults: (previews: Record<string, DataTable>, inputPreviews: Record<string, DataTable>, outputs: Record<string, DataTable>) => void
   setIsExecuting: (v: boolean) => void
   clearResults: () => void
 }
@@ -50,6 +52,7 @@ export const useFlowStore = create<FlowState>()(
       inputDataMap: {},
       excelSheetsMap: {},
       previewMap: {},
+      inputPreviewMap: {},
       outputMap: {},
       isExecuting: false,
 
@@ -82,9 +85,9 @@ export const useFlowStore = create<FlowState>()(
         set((s) => ({ inputDataMap: { ...s.inputDataMap, [nodeId]: data } })),
       setExcelSheets: (nodeId, sheets) =>
         set((s) => ({ excelSheetsMap: { ...s.excelSheetsMap, [nodeId]: sheets } })),
-      setExecutionResults: (previews, outputs) => set({ previewMap: previews, outputMap: outputs, isExecuting: false }),
+      setExecutionResults: (previews, inputPreviews, outputs) => set({ previewMap: previews, inputPreviewMap: inputPreviews, outputMap: outputs, isExecuting: false }),
       setIsExecuting: (v) => set({ isExecuting: v }),
-      clearResults: () => set({ previewMap: {}, outputMap: {} }),
+      clearResults: () => set({ previewMap: {}, inputPreviewMap: {}, outputMap: {} }),
     }),
     {
       name: 'excel-data-flow-store',

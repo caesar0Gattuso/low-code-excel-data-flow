@@ -2,11 +2,13 @@ import { useFlowStore } from '@/store/useFlowStore'
 import type {
   FlowNodeData,
   TierRuleConfig,
+  TierRuleV2Config,
   FormulaConfig,
   FilterConfig,
   ConstraintConfig,
   ConditionalAssignConfig,
   ConditionalRule,
+  Condition,
   CompareOperator,
   JoinConfig,
   GroupByConfig,
@@ -15,17 +17,19 @@ import type {
   TierBracket,
   DataTable,
 } from '@/types'
-import { parseExcelFile, downloadTierTemplate } from '@/utils/excelUtils'
+import { parseExcelFile, downloadTierTemplate, exportToExcel } from '@/utils/excelUtils'
 import { useCallback, useRef, useState } from 'react'
 
 export function PropertiesPanel() {
   const selectedNodeId = useFlowStore((s) => s.selectedNodeId)
   const nodes = useFlowStore((s) => s.nodes)
   const previewMap = useFlowStore((s) => s.previewMap)
+  const inputPreviewMap = useFlowStore((s) => s.inputPreviewMap)
   const updateNodeData = useFlowStore((s) => s.updateNodeData)
 
   const node = nodes.find((n) => n.id === selectedNodeId)
   const preview = selectedNodeId ? previewMap[selectedNodeId] : undefined
+  const inputPreview = selectedNodeId ? inputPreviewMap[selectedNodeId] : undefined
 
   if (!node) {
     return (
@@ -58,11 +62,12 @@ export function PropertiesPanel() {
 
         <ConfigForm nodeId={node.id} data={data} updateNodeData={updateNodeData} />
 
+        {inputPreview && (
+          <DataPreviewSection title="输入数据" table={inputPreview} defaultCollapsed />
+        )}
+
         {preview && (
-          <div className="mt-4">
-            <h3 className="text-xs font-semibold text-gray-500 mb-2">数据预览</h3>
-            <DataPreview table={preview} />
-          </div>
+          <DataPreviewSection title="输出数据" table={preview} />
         )}
       </div>
     </aside>
@@ -89,9 +94,11 @@ function ConfigForm({
     case 'excelInput':
       return <ExcelInputForm nodeId={nodeId} config={data.config as ExcelInputConfig} onUpdate={update} />
     case 'excelOutput':
-      return <ExcelOutputForm config={data.config as ExcelOutputConfig} onUpdate={update} />
+      return <ExcelOutputForm nodeId={nodeId} config={data.config as ExcelOutputConfig} onUpdate={update} />
     case 'tierRule':
       return <TierRuleForm config={data.config as TierRuleConfig} onUpdate={update} />
+    case 'tierRuleV2':
+      return <TierRuleV2Form config={data.config as TierRuleV2Config} onUpdate={update} />
     case 'formula':
       return <FormulaForm config={data.config as FormulaConfig} onUpdate={update} />
     case 'filter':
@@ -116,6 +123,18 @@ function ConfigForm({
 const labelClass = 'block text-xs font-medium text-gray-600 mb-1'
 const inputClass = 'w-full px-2 py-1.5 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-indigo-400 focus:outline-none'
 
+/**
+ * 安全解析数值输入：保留用户正在输入的中间状态（空值、负号、小数点、尾零）。
+ * 支持 [列名] 引用语法。
+ */
+function safeParseNum(raw: string): number | string {
+  if (raw === '' || raw === '-' || raw === '-.' || raw === '.') return raw
+  if (raw.startsWith('[') && raw.endsWith(']')) return raw
+  if (/\.$/.test(raw) || /\.\d*0$/.test(raw)) return raw
+  const v = Number(raw)
+  return isNaN(v) ? raw : v
+}
+
 function ExcelInputForm({
   nodeId,
   config,
@@ -128,12 +147,38 @@ function ExcelInputForm({
   const setInputData = useFlowStore((s) => s.setInputData)
   const setExcelSheets = useFlowStore((s) => s.setExcelSheets)
   const allSheets = useFlowStore((s) => s.excelSheetsMap[nodeId])
-  const currentData = useFlowStore((s) => s.inputDataMap[nodeId])
   const fileRef = useRef<HTMLInputElement>(null)
   const [copiedCol, setCopiedCol] = useState<string | null>(null)
 
   const sheetNames = allSheets ? Object.keys(allSheets) : []
-  const columns = currentData?.columns ?? []
+  const rawData = allSheets?.[config.sheetName]
+  const allColumns = rawData?.columns ?? []
+
+  const selected = config.selectedColumns
+  const isAllSelected = !selected || selected.length === allColumns.length
+
+  const applyColumnFilter = useCallback(
+    (fullData: DataTable, cols: string[] | undefined) => {
+      if (!cols || cols.length === fullData.columns.length) {
+        setInputData(nodeId, fullData)
+        return
+      }
+      if (cols.length === 0) {
+        setInputData(nodeId, { columns: [], rows: [] })
+        return
+      }
+      const colSet = new Set(cols)
+      setInputData(nodeId, {
+        columns: fullData.columns.filter((c) => colSet.has(c)),
+        rows: fullData.rows.map((row) => {
+          const filtered: Record<string, unknown> = {}
+          for (const c of cols) if (c in row) filtered[c] = row[c]
+          return filtered
+        }),
+      })
+    },
+    [nodeId, setInputData],
+  )
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -144,16 +189,43 @@ function ExcelInputForm({
     const names = Object.keys(sheets)
     const targetSheet = config.sheetName && sheets[config.sheetName] ? config.sheetName : names[0]
     if (targetSheet && sheets[targetSheet]) {
+      const newConfig: ExcelInputConfig = { ...config, sheetName: targetSheet, fileName: file.name, selectedColumns: undefined }
+      onUpdate(newConfig)
       setInputData(nodeId, sheets[targetSheet])
-      onUpdate({ ...config, sheetName: targetSheet, fileName: file.name })
     }
   }
 
   const handleSheetChange = (sheetName: string) => {
     if (allSheets && allSheets[sheetName]) {
+      const newConfig: ExcelInputConfig = { ...config, sheetName, selectedColumns: undefined }
+      onUpdate(newConfig)
       setInputData(nodeId, allSheets[sheetName])
-      onUpdate({ ...config, sheetName })
     }
+  }
+
+  const toggleColumn = (col: string) => {
+    if (!rawData) return
+    let next: string[] | undefined
+    if (isAllSelected) {
+      next = allColumns.filter((c) => c !== col)
+    } else {
+      const cur = selected ?? []
+      if (cur.includes(col)) {
+        next = cur.filter((c) => c !== col)
+      } else {
+        next = [...cur, col]
+      }
+      if (next.length === allColumns.length) next = undefined
+    }
+    onUpdate({ ...config, selectedColumns: next })
+    applyColumnFilter(rawData, next)
+  }
+
+  const toggleAll = () => {
+    if (!rawData) return
+    const next = isAllSelected ? ([] as string[]) : undefined
+    onUpdate({ ...config, selectedColumns: next })
+    applyColumnFilter(rawData, next)
   }
 
   const handleCopyColumn = (col: string) => {
@@ -196,26 +268,48 @@ function ExcelInputForm({
         )}
       </div>
 
-      {columns.length > 0 && (
+      {allColumns.length > 0 && (
         <div>
           <label className={labelClass}>
-            表头列 <span className="font-normal text-gray-400">({columns.length} 列，点击复制)</span>
+            选择列 <span className="font-normal text-gray-400">
+              ({isAllSelected ? `全部 ${allColumns.length}` : `${selected?.length ?? 0}/${allColumns.length}`} 列参与流程)
+            </span>
           </label>
-          <div className="flex flex-wrap gap-1.5 mt-1">
-            {columns.map((col) => (
-              <button
-                key={col}
-                onClick={() => handleCopyColumn(col)}
-                className={`px-2 py-1 text-[11px] rounded border transition-all cursor-pointer ${
-                  copiedCol === col
-                    ? 'bg-green-100 border-green-400 text-green-700'
-                    : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-indigo-50 hover:border-indigo-300 hover:text-indigo-600'
-                }`}
-                title={`点击复制: ${col}`}
-              >
-                {copiedCol === col ? '✓ 已复制' : col}
-              </button>
-            ))}
+          <div className="mb-1.5 flex items-center gap-2">
+            <button
+              onClick={toggleAll}
+              className="text-[10px] text-indigo-500 hover:text-indigo-700"
+            >
+              {isAllSelected ? '取消全选' : '全选'}
+            </button>
+            <span className="text-[10px] text-gray-300">|</span>
+            <span className="text-[10px] text-gray-400">点击列名复制，勾选框选择参与流程的列</span>
+          </div>
+          <div className="space-y-0.5 max-h-56 overflow-y-auto border border-gray-200 rounded p-1.5">
+            {allColumns.map((col) => {
+              const checked = isAllSelected || (selected?.includes(col) ?? false)
+              return (
+                <div key={col} className="flex items-center gap-1.5 group">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleColumn(col)}
+                    className="w-3.5 h-3.5 rounded border-gray-300 text-indigo-500 focus:ring-indigo-400 flex-shrink-0 cursor-pointer"
+                  />
+                  <button
+                    onClick={() => handleCopyColumn(col)}
+                    className={`text-[11px] truncate text-left flex-1 px-1 py-0.5 rounded transition-colors cursor-pointer ${
+                      copiedCol === col
+                        ? 'bg-green-100 text-green-700'
+                        : 'text-gray-700 hover:bg-indigo-50 hover:text-indigo-600'
+                    }`}
+                    title={`点击复制: ${col}`}
+                  >
+                    {copiedCol === col ? '✓ 已复制' : col}
+                  </button>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
@@ -224,12 +318,53 @@ function ExcelInputForm({
 }
 
 function ExcelOutputForm({
+  nodeId,
   config,
   onUpdate,
 }: {
+  nodeId: string
   config: ExcelOutputConfig
   onUpdate: (c: ExcelOutputConfig) => void
 }) {
+  const inputPreview = useFlowStore((s) => s.inputPreviewMap[nodeId])
+  const outputPreview = useFlowStore((s) => s.previewMap[nodeId])
+  const outputData = useFlowStore((s) => s.outputMap[nodeId])
+  const availableColumns = inputPreview?.columns ?? outputPreview?.columns ?? []
+
+  const handleDownload = useCallback(() => {
+    if (!outputData) {
+      alert('请先执行流程')
+      return
+    }
+    const fileName = config.fileName || 'final_result.xlsx'
+    const sheetName = config.sheetName || 'Result'
+    exportToExcel({ [sheetName]: outputData }, fileName)
+  }, [outputData, config.fileName, config.sheetName])
+
+  const selected = config.selectedColumns
+  const isAllSelected = !selected || selected.length === availableColumns.length
+
+  const toggleColumn = (col: string) => {
+    let next: string[] | undefined
+    if (isAllSelected) {
+      next = availableColumns.filter((c) => c !== col)
+    } else {
+      const cur = selected ?? []
+      if (cur.includes(col)) {
+        next = cur.filter((c) => c !== col)
+        if (next.length === 0) next = undefined
+      } else {
+        next = [...cur, col]
+      }
+      if (next && next.length === availableColumns.length) next = undefined
+    }
+    onUpdate({ ...config, selectedColumns: next })
+  }
+
+  const toggleAll = () => {
+    onUpdate({ ...config, selectedColumns: isAllSelected ? [] : undefined })
+  }
+
   return (
     <div className="space-y-3">
       <div>
@@ -239,6 +374,57 @@ function ExcelOutputForm({
       <div>
         <label className={labelClass}>文件名</label>
         <input className={inputClass} value={config.fileName} onChange={(e) => onUpdate({ ...config, fileName: e.target.value })} />
+      </div>
+
+      {availableColumns.length > 0 && (
+        <div>
+          <label className={labelClass}>
+            导出列 <span className="font-normal text-gray-400">
+              ({isAllSelected ? `全部 ${availableColumns.length}` : `${selected?.length ?? 0}/${availableColumns.length}`} 列)
+            </span>
+          </label>
+          <div className="mb-1.5">
+            <button
+              onClick={toggleAll}
+              className="text-[10px] text-indigo-500 hover:text-indigo-700"
+            >
+              {isAllSelected ? '取消全选' : '全选'}
+            </button>
+          </div>
+          <div className="space-y-0.5 max-h-56 overflow-y-auto border border-gray-200 rounded p-1.5">
+            {availableColumns.map((col) => {
+              const checked = isAllSelected || (selected?.includes(col) ?? false)
+              return (
+                <label key={col} className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleColumn(col)}
+                    className="w-3.5 h-3.5 rounded border-gray-300 text-indigo-500 focus:ring-indigo-400 flex-shrink-0"
+                  />
+                  <span className={`text-[11px] truncate ${checked ? 'text-gray-700' : 'text-gray-400'}`}>
+                    {col}
+                  </span>
+                </label>
+              )
+            })}
+          </div>
+          <p className="text-[10px] text-gray-400 mt-1">执行后显示可用列，勾选要导出的列</p>
+        </div>
+      )}
+
+      {availableColumns.length === 0 && (
+        <p className="text-[10px] text-gray-400 italic">请先执行流程以查看可用列</p>
+      )}
+
+      <div className="border-t border-gray-200 pt-3">
+        <button
+          onClick={handleDownload}
+          disabled={!outputData}
+          className="w-full px-3 py-2 text-xs font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed rounded transition-colors"
+        >
+          {outputData ? '下载此节点结果' : '执行后可下载'}
+        </button>
       </div>
     </div>
   )
@@ -426,17 +612,17 @@ function TierRuleForm({
         <div className="space-y-1.5">
           {config.brackets.map((b, i) => (
             <div key={i} className="flex items-center gap-1">
-              <input type="number" className={`${inputClass} w-16`} value={b.min} onChange={(e) => updateBracket(i, 'min', Number(e.target.value))} placeholder="Min" />
+              <input inputMode="decimal" className={`${inputClass} w-16`} value={b.min} onChange={(e) => updateBracket(i, 'min', safeParseNum(e.target.value) as number)} placeholder="Min" />
               <span className="text-[10px] text-gray-400">~</span>
               <input
-                type="number"
+                inputMode="decimal"
                 className={`${inputClass} w-16 ${b.max === null ? '!bg-indigo-50 !border-indigo-200' : ''}`}
                 value={b.max ?? ''}
-                onChange={(e) => updateBracket(i, 'max', e.target.value === '' ? null : Number(e.target.value))}
+                onChange={(e) => updateBracket(i, 'max', e.target.value === '' ? null : safeParseNum(e.target.value) as number)}
                 placeholder="无上限"
               />
               <span className="text-[10px] text-gray-400">=</span>
-              <input type="number" className={`${inputClass} w-14`} value={b.value} onChange={(e) => updateBracket(i, 'value', Number(e.target.value))} placeholder="值" />
+              <input inputMode="decimal" className={`${inputClass} w-14`} value={b.value} onChange={(e) => updateBracket(i, 'value', safeParseNum(e.target.value) as number)} placeholder="值" />
               <button onClick={() => removeBracket(i)} className="text-red-400 hover:text-red-600 text-xs px-1">x</button>
             </div>
           ))}
@@ -453,6 +639,158 @@ function TierRuleForm({
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+function TierRuleV2Form({
+  config,
+  onUpdate,
+}: {
+  config: TierRuleV2Config
+  onUpdate: (c: TierRuleV2Config) => void
+}) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [importMsg, setImportMsg] = useState<string | null>(null)
+
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    try {
+      const sheets = await parseExcelFile(file)
+      const firstSheet = Object.keys(sheets)[0]
+      const table = sheets[firstSheet]
+      if (!table || table.rows.length === 0) {
+        setImportMsg('Excel 为空')
+        return
+      }
+
+      const cols = table.columns
+      const guessMin = cols.find((c) => /min|下限|最小/i.test(c)) ?? cols[0] ?? ''
+      const guessMax = cols.find((c) => /max|上限|最大/i.test(c)) ?? cols[1] ?? ''
+
+      onUpdate({
+        ...config,
+        minColumn: guessMin,
+        maxColumn: guessMax,
+        ruleTable: table,
+      })
+      setImportMsg(`导入成功: ${table.rows.length} 行 × ${cols.length} 列`)
+      setTimeout(() => setImportMsg(null), 3000)
+    } catch {
+      setImportMsg('文件解析失败')
+    }
+    e.target.value = ''
+  }
+
+  const outputCols = config.ruleTable.columns.filter(
+    (c) => c !== config.minColumn && c !== config.maxColumn,
+  )
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className={labelClass}>匹配列 <span className="font-normal text-gray-400">(原始数据中用于阶梯匹配的列)</span></label>
+        <input
+          className={inputClass}
+          value={config.inputColumn}
+          onChange={(e) => onUpdate({ ...config, inputColumn: e.target.value })}
+          placeholder="如：钻石数"
+        />
+      </div>
+
+      <div className="border border-dashed border-gray-300 rounded p-2.5 bg-gray-50/50">
+        <div className="flex items-center justify-between mb-1.5">
+          <label className={labelClass + ' !mb-0'}>导入规则表</label>
+          <button
+            onClick={() => fileRef.current?.click()}
+            className="text-[11px] px-2 py-1 bg-indigo-50 text-indigo-600 rounded hover:bg-indigo-100 transition-colors"
+          >
+            选择 Excel
+          </button>
+          <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} className="hidden" />
+        </div>
+        <p className="text-[10px] text-gray-400">
+          规则表需包含 min、max 列（阶梯区间）及其他输出列（如 value-X、A-min 等）
+        </p>
+        {importMsg && (
+          <p className={`text-[10px] mt-1 ${importMsg.includes('成功') ? 'text-green-600' : 'text-red-500'}`}>
+            {importMsg}
+          </p>
+        )}
+      </div>
+
+      {config.ruleTable.columns.length > 0 && (
+        <>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className={labelClass}>下限列名</label>
+              <select
+                className={inputClass}
+                value={config.minColumn}
+                onChange={(e) => onUpdate({ ...config, minColumn: e.target.value })}
+              >
+                {config.ruleTable.columns.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className={labelClass}>上限列名</label>
+              <select
+                className={inputClass}
+                value={config.maxColumn}
+                onChange={(e) => onUpdate({ ...config, maxColumn: e.target.value })}
+              >
+                {config.ruleTable.columns.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className={labelClass}>
+              输出列 <span className="font-normal text-gray-400">({outputCols.length} 列，匹配后追加到原始表)</span>
+            </label>
+            <div className="flex flex-wrap gap-1">
+              {outputCols.map((col) => (
+                <span key={col} className="px-2 py-0.5 text-[10px] bg-indigo-50 text-indigo-600 rounded border border-indigo-200">
+                  {col}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className={labelClass}>规则预览</label>
+            <div className="overflow-auto max-h-36 border border-gray-200 rounded text-[10px]">
+              <table className="min-w-full">
+                <thead className="bg-gray-100 sticky top-0">
+                  <tr>
+                    {config.ruleTable.columns.map((col) => (
+                      <th key={col} className="px-2 py-1 text-left font-medium text-gray-600 whitespace-nowrap">
+                        {col === config.minColumn ? `${col} (下限)` : col === config.maxColumn ? `${col} (上限)` : col}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {config.ruleTable.rows.map((row, i) => (
+                    <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                      {config.ruleTable.columns.map((col) => (
+                        <td key={col} className="px-2 py-0.5 whitespace-nowrap text-gray-700">
+                          {row[col] != null ? String(row[col]) : ''}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -505,7 +843,7 @@ function FilterForm({
       </div>
       <div>
         <label className={labelClass}>比较值</label>
-        <input className={inputClass} value={String(config.value)} onChange={(e) => { const v = Number(e.target.value); onUpdate({ ...config, value: isNaN(v) ? e.target.value : v }) }} />
+        <input className={inputClass} value={String(config.value)} onChange={(e) => onUpdate({ ...config, value: safeParseNum(e.target.value) })} placeholder="固定值 或 [列名]" />
       </div>
     </div>
   )
@@ -526,11 +864,11 @@ function ConstraintForm({
       </div>
       <div>
         <label className={labelClass}>保底值 (Min)</label>
-        <input type="number" className={inputClass} value={config.min ?? ''} onChange={(e) => onUpdate({ ...config, min: e.target.value === '' ? undefined : Number(e.target.value) })} placeholder="不设限" />
+        <input inputMode="decimal" className={inputClass} value={config.min ?? ''} onChange={(e) => { const raw = e.target.value; onUpdate({ ...config, min: raw === '' ? undefined : safeParseNum(raw) as number }) }} placeholder="不设限" />
       </div>
       <div>
         <label className={labelClass}>封顶值 (Max)</label>
-        <input type="number" className={inputClass} value={config.max ?? ''} onChange={(e) => onUpdate({ ...config, max: e.target.value === '' ? undefined : Number(e.target.value) })} placeholder="不设限" />
+        <input inputMode="decimal" className={inputClass} value={config.max ?? ''} onChange={(e) => { const raw = e.target.value; onUpdate({ ...config, max: raw === '' ? undefined : safeParseNum(raw) as number }) }} placeholder="不设限" />
       </div>
     </div>
   )
@@ -623,20 +961,63 @@ function GroupByForm({
       </div>
       <div>
         <label className={labelClass}>聚合规则</label>
-        {config.aggregations.map((agg, i) => (
-          <div key={i} className="flex gap-1 mb-1.5 items-center">
-            <input className={`${inputClass} w-20`} value={agg.column} onChange={(e) => { const a = [...config.aggregations]; a[i] = { ...a[i], column: e.target.value }; onUpdate({ ...config, aggregations: a }) }} placeholder="列" />
-            <select className={`${inputClass} w-16`} value={agg.func} onChange={(e) => { const a = [...config.aggregations]; a[i] = { ...a[i], func: e.target.value as 'sum' | 'count' | 'avg' | 'min' | 'max' }; onUpdate({ ...config, aggregations: a }) }}>
-              <option value="sum">求和</option>
-              <option value="count">计数</option>
-              <option value="avg">平均</option>
-              <option value="min">最小</option>
-              <option value="max">最大</option>
-            </select>
-            <input className={`${inputClass} w-20`} value={agg.outputColumn} onChange={(e) => { const a = [...config.aggregations]; a[i] = { ...a[i], outputColumn: e.target.value }; onUpdate({ ...config, aggregations: a }) }} placeholder="输出列" />
-            <button onClick={() => { const a = config.aggregations.filter((_, j) => j !== i); onUpdate({ ...config, aggregations: a }) }} className="text-red-400 hover:text-red-600 text-xs px-1">×</button>
-          </div>
-        ))}
+        {config.aggregations.map((agg, i) => {
+          const updateAgg = (partial: Partial<typeof agg>) => {
+            const a = [...config.aggregations]
+            a[i] = { ...a[i], ...partial }
+            onUpdate({ ...config, aggregations: a })
+          }
+          const removeAgg = () => {
+            onUpdate({ ...config, aggregations: config.aggregations.filter((_, j) => j !== i) })
+          }
+          return (
+            <div key={i} className="mb-2 border border-gray-200 rounded p-1.5 bg-gray-50/50 space-y-1">
+              <div className="flex gap-1 items-center">
+                <input className={`${inputClass} flex-1`} value={agg.column} onChange={(e) => updateAgg({ column: e.target.value })} placeholder="列名" />
+                <select
+                  className={`${inputClass} !w-20`}
+                  value={agg.func}
+                  onChange={(e) => updateAgg({ func: e.target.value as typeof agg.func })}
+                >
+                  <option value="sum">求和</option>
+                  <option value="count">计数</option>
+                  <option value="avg">平均</option>
+                  <option value="min">最小</option>
+                  <option value="max">最大</option>
+                  <option value="countif">条件计数</option>
+                </select>
+                <button onClick={removeAgg} className="text-red-400 hover:text-red-600 text-xs px-1 flex-shrink-0">×</button>
+              </div>
+              {agg.func === 'countif' && (
+                <div className="flex gap-1 items-center pl-1">
+                  <span className="text-[10px] text-gray-400 flex-shrink-0">条件:</span>
+                  <select
+                    className={`${inputClass} !w-12`}
+                    value={agg.operator ?? '=='}
+                    onChange={(e) => updateAgg({ operator: e.target.value as CompareOperator })}
+                  >
+                    <option value="==">==</option>
+                    <option value="!=">!=</option>
+                    <option value=">">&gt;</option>
+                    <option value=">=">&gt;=</option>
+                    <option value="<">&lt;</option>
+                    <option value="<=">&lt;=</option>
+                  </select>
+                  <input
+                    className={`${inputClass} flex-1`}
+                    value={String(agg.compareValue ?? '')}
+                    onChange={(e) => updateAgg({ compareValue: safeParseNum(e.target.value) })}
+                    placeholder="比较值"
+                  />
+                </div>
+              )}
+              <div className="flex gap-1 items-center pl-1">
+                <span className="text-[10px] text-gray-400 flex-shrink-0">输出:</span>
+                <input className={`${inputClass} flex-1`} value={agg.outputColumn} onChange={(e) => updateAgg({ outputColumn: e.target.value })} placeholder="输出列名" />
+              </div>
+            </div>
+          )
+        })}
         <button onClick={() => onUpdate({ ...config, aggregations: [...config.aggregations, { column: '', func: 'sum', outputColumn: '' }] })} className="text-[11px] text-indigo-500 hover:text-indigo-700">+ 添加聚合</button>
       </div>
     </div>
@@ -650,14 +1031,46 @@ function ConditionalAssignForm({
   config: ConditionalAssignConfig
   onUpdate: (c: ConditionalAssignConfig) => void
 }) {
+  const parseValue = safeParseNum
+
   const updateRule = (idx: number, partial: Partial<ConditionalRule>) => {
     const rules = [...config.rules]
     rules[idx] = { ...rules[idx], ...partial }
     onUpdate({ ...config, rules })
   }
 
+  const updateCondition = (ruleIdx: number, condIdx: number, partial: Partial<Condition>) => {
+    const rules = [...config.rules]
+    const conditions = [...rules[ruleIdx].conditions]
+    conditions[condIdx] = { ...conditions[condIdx], ...partial }
+    rules[ruleIdx] = { ...rules[ruleIdx], conditions }
+    onUpdate({ ...config, rules })
+  }
+
+  const addCondition = (ruleIdx: number) => {
+    const rules = [...config.rules]
+    rules[ruleIdx] = {
+      ...rules[ruleIdx],
+      conditions: [...rules[ruleIdx].conditions, { column: '', operator: '>=', compareValue: '' }],
+    }
+    onUpdate({ ...config, rules })
+  }
+
+  const removeCondition = (ruleIdx: number, condIdx: number) => {
+    const rules = [...config.rules]
+    rules[ruleIdx] = {
+      ...rules[ruleIdx],
+      conditions: rules[ruleIdx].conditions.filter((_, i) => i !== condIdx),
+    }
+    onUpdate({ ...config, rules })
+  }
+
   const addRule = () => {
-    const newRule: ConditionalRule = { column: '', operator: '>=', compareValue: 0, result: 0 }
+    const newRule: ConditionalRule = {
+      conditions: [{ column: '', operator: '>=', compareValue: '' }],
+      logic: 'and',
+      result: '',
+    }
     onUpdate({ ...config, rules: [...config.rules, newRule] })
   }
 
@@ -688,77 +1101,98 @@ function ConditionalAssignForm({
         <label className={labelClass}>
           条件规则 <span className="font-normal text-gray-400">({config.rules.length} 条，从上到下依次匹配)</span>
         </label>
+        <p className="text-[10px] text-gray-400 mb-1.5">所有值字段均支持 <code className="bg-gray-100 px-1 rounded">[列名]</code> 引用同行数据</p>
         <div className="space-y-2">
-          {config.rules.map((rule, i) => (
-            <div key={i} className="border border-gray-200 rounded p-2 bg-gray-50/50 space-y-1.5">
+          {config.rules.map((rule, ruleIdx) => (
+            <div key={ruleIdx} className="border border-gray-200 rounded p-2 bg-gray-50/50 space-y-1.5">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] text-gray-400 font-medium">规则 {i + 1}</span>
+                <span className="text-[10px] text-indigo-500 font-medium">{ruleIdx === 0 ? '如果' : '否则如果'}</span>
                 <div className="flex gap-1">
-                  <button
-                    onClick={() => moveRule(i, -1)}
-                    disabled={i === 0}
-                    className="text-[10px] text-gray-400 hover:text-gray-600 disabled:opacity-30 px-0.5"
-                    title="上移"
-                  >
-                    ↑
-                  </button>
-                  <button
-                    onClick={() => moveRule(i, 1)}
-                    disabled={i === config.rules.length - 1}
-                    className="text-[10px] text-gray-400 hover:text-gray-600 disabled:opacity-30 px-0.5"
-                    title="下移"
-                  >
-                    ↓
-                  </button>
-                  <button
-                    onClick={() => removeRule(i)}
-                    className="text-red-400 hover:text-red-600 text-xs px-0.5"
-                  >
-                    x
-                  </button>
+                  <button onClick={() => moveRule(ruleIdx, -1)} disabled={ruleIdx === 0} className="text-[10px] text-gray-400 hover:text-gray-600 disabled:opacity-30 px-0.5" title="上移">↑</button>
+                  <button onClick={() => moveRule(ruleIdx, 1)} disabled={ruleIdx === config.rules.length - 1} className="text-[10px] text-gray-400 hover:text-gray-600 disabled:opacity-30 px-0.5" title="下移">↓</button>
+                  <button onClick={() => removeRule(ruleIdx)} className="text-red-400 hover:text-red-600 text-xs px-0.5">x</button>
                 </div>
               </div>
 
-              <div className="flex items-center gap-1">
-                <span className="text-[10px] text-gray-400 w-4">如</span>
-                <input
-                  className={`${inputClass} flex-1`}
-                  value={rule.column}
-                  onChange={(e) => updateRule(i, { column: e.target.value })}
-                  placeholder="列名"
-                />
-                <select
-                  className={`${inputClass} !w-14`}
-                  value={rule.operator}
-                  onChange={(e) => updateRule(i, { operator: e.target.value as CompareOperator })}
-                >
-                  <option value=">">{'>'}</option>
-                  <option value=">=">{'>='}</option>
-                  <option value="<">{'<'}</option>
-                  <option value="<=">{'<='}</option>
-                  <option value="==">{'=='}</option>
-                  <option value="!=">{'!='}</option>
-                </select>
-                <input
-                  className={`${inputClass} w-16`}
-                  value={String(rule.compareValue)}
-                  onChange={(e) => {
-                    const v = Number(e.target.value)
-                    updateRule(i, { compareValue: isNaN(v) ? e.target.value : v })
-                  }}
-                  placeholder="比较值"
-                />
-              </div>
-              <div className="flex items-center gap-1">
-                <span className="text-[10px] text-gray-400 w-4">→</span>
+              {rule.conditions.length > 1 && (
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] text-gray-400">条件组合:</span>
+                  <select
+                    className="text-[10px] px-1.5 py-0.5 border border-gray-300 rounded bg-white"
+                    value={rule.logic}
+                    onChange={(e) => updateRule(ruleIdx, { logic: e.target.value as 'and' | 'or' })}
+                  >
+                    <option value="and">全部满足（并且）</option>
+                    <option value="or">任一满足（或者）</option>
+                  </select>
+                </div>
+              )}
+
+              {rule.conditions.map((cond, condIdx) => (
+                <div key={condIdx}>
+                  {condIdx > 0 && (
+                    <div className="text-center text-[10px] text-gray-300 -my-0.5">
+                      {rule.logic === 'and' ? '并且' : '或者'}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-1">
+                    <input
+                      className={`${inputClass} flex-1`}
+                      value={cond.column}
+                      onChange={(e) => updateCondition(ruleIdx, condIdx, { column: e.target.value })}
+                      placeholder="列名"
+                    />
+                    <select
+                      className={`${inputClass} !w-14`}
+                      value={cond.operator}
+                      onChange={(e) => updateCondition(ruleIdx, condIdx, { operator: e.target.value as CompareOperator })}
+                    >
+                      <option value=">">{'>'}</option>
+                      <option value=">=">{'>='}</option>
+                      <option value="<">{'<'}</option>
+                      <option value="<=">{'<='}</option>
+                      <option value="==">{'=='}</option>
+                      <option value="!=">{'!='}</option>
+                    </select>
+                    <input
+                      className={`${inputClass} flex-1`}
+                      value={String(cond.compareValue)}
+                      onChange={(e) => updateCondition(ruleIdx, condIdx, { compareValue: parseValue(e.target.value) })}
+                      placeholder="固定值 或 [列名]"
+                    />
+                    {rule.conditions.length > 1 && (
+                      <button onClick={() => removeCondition(ruleIdx, condIdx)} className="text-red-400 hover:text-red-600 text-[10px] px-0.5 flex-shrink-0">x</button>
+                    )}
+                  </div>
+                </div>
+              ))}
+
+              <button
+                onClick={() => addCondition(ruleIdx)}
+                className="text-[10px] text-gray-400 hover:text-indigo-500"
+              >
+                + 添加条件
+              </button>
+
+              <div className="flex items-center gap-1 border-t border-gray-100 pt-1.5">
+                <span className="text-[10px] text-amber-500 font-medium flex-shrink-0">则 →</span>
                 <input
                   className={`${inputClass} flex-1`}
                   value={String(rule.result)}
+                  onChange={(e) => updateRule(ruleIdx, { result: parseValue(e.target.value) })}
+                  placeholder="固定值 或 [列名]"
+                />
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] text-gray-400 font-medium flex-shrink-0">否则 →</span>
+                <input
+                  className={`${inputClass} flex-1`}
+                  value={String(rule.elseResult ?? '')}
                   onChange={(e) => {
-                    const v = Number(e.target.value)
-                    updateRule(i, { result: isNaN(v) ? e.target.value : v })
+                    const raw = e.target.value
+                    updateRule(ruleIdx, { elseResult: raw === '' ? undefined : parseValue(raw) })
                   }}
-                  placeholder="结果值"
+                  placeholder="留空继续匹配 或 [列名]"
                 />
               </div>
             </div>
@@ -773,17 +1207,46 @@ function ConditionalAssignForm({
       </div>
 
       <div className="border-t border-gray-200 pt-3">
-        <label className={labelClass}>默认值 <span className="font-normal text-gray-400">(所有条件都不满足时)</span></label>
+        <label className={labelClass}>兜底值 <span className="font-normal text-gray-400">(所有规则及其否则都未命中)</span></label>
         <input
           className={inputClass}
           value={String(config.defaultValue)}
-          onChange={(e) => {
-            const v = Number(e.target.value)
-            onUpdate({ ...config, defaultValue: isNaN(v) ? e.target.value : v })
-          }}
-          placeholder="0"
+          onChange={(e) => onUpdate({ ...config, defaultValue: parseValue(e.target.value) })}
+          placeholder="固定值 或 [列名]"
         />
       </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 可折叠数据预览区域
+// ---------------------------------------------------------------------------
+
+function DataPreviewSection({
+  title,
+  table,
+  defaultCollapsed = false,
+}: {
+  title: string
+  table: DataTable
+  defaultCollapsed?: boolean
+}) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed)
+
+  return (
+    <div className="mt-4">
+      <button
+        className="flex items-center gap-1 text-xs font-semibold text-gray-500 hover:text-gray-700 mb-2 w-full text-left"
+        onClick={() => setCollapsed((v) => !v)}
+      >
+        <span className="text-[10px]">{collapsed ? '▶' : '▼'}</span>
+        {title}
+        <span className="font-normal text-gray-400 ml-1">
+          ({table.rows.length} 行 × {table.columns.length} 列)
+        </span>
+      </button>
+      {!collapsed && <DataPreview table={table} />}
     </div>
   )
 }

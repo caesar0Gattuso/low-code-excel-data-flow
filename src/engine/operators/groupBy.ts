@@ -1,5 +1,6 @@
 import type { DataTable, GroupByConfig, DataRow } from '@/types'
 import { fixFloat } from '@/utils/precision'
+import { smartCompare } from '@/utils/compare'
 
 export function executeGroupBy(input: DataTable, config: GroupByConfig): DataTable {
   const { groupByColumns, aggregations } = config
@@ -26,13 +27,22 @@ export function executeGroupBy(input: DataTable, config: GroupByConfig): DataTab
     }
 
     for (const agg of aggregations) {
+      if (agg.func === 'countif') {
+        const op = agg.operator ?? '=='
+        const cmpVal = agg.compareValue ?? ''
+        resultRow[agg.outputColumn] = groupRows.filter(
+          (r) => smartCompare(r[agg.column], op, cmpVal, r),
+        ).length
+        continue
+      }
+
       const values = groupRows.map((r) => Number(r[agg.column]) || 0)
       switch (agg.func) {
         case 'sum':
           resultRow[agg.outputColumn] = fixFloat(values.reduce((a, b) => a + b, 0))
           break
         case 'count':
-          resultRow[agg.outputColumn] = values.length
+          resultRow[agg.outputColumn] = groupRows.length
           break
         case 'avg':
           resultRow[agg.outputColumn] =

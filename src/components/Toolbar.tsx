@@ -52,7 +52,7 @@ export function Toolbar() {
     worker.onmessage = (event: MessageEvent<EngineResponse>) => {
       const msg = event.data
       if (msg.type === 'result') {
-        setExecutionResults(msg.previews ?? {}, msg.outputs ?? {})
+        setExecutionResults(msg.previews ?? {}, msg.inputPreviews ?? {}, msg.outputs ?? {})
         worker.terminate()
       } else if (msg.type === 'error') {
         alert('执行出错: ' + msg.error)
@@ -120,7 +120,7 @@ export function Toolbar() {
     [setNodes, setEdges],
   )
 
-  const handleDownloadResults = useCallback(() => {
+  const handleMergeDownload = useCallback(() => {
     if (Object.keys(outputMap).length === 0) {
       alert('请先执行流程')
       return
@@ -128,10 +128,24 @@ export function Toolbar() {
     const tables: Record<string, typeof outputMap[string]> = {}
     for (const [nodeId, data] of Object.entries(outputMap)) {
       const node = nodes.find((n) => n.id === nodeId)
-      const sheetName = node ? (node.data as FlowNodeData).config as ExcelOutputConfig : null
-      tables[sheetName?.sheetName ?? nodeId] = data
+      const cfg = node ? (node.data as FlowNodeData).config as ExcelOutputConfig : null
+      tables[cfg?.sheetName ?? nodeId] = data
     }
-    exportToExcel(tables, 'settlement_result.xlsx')
+    exportToExcel(tables, 'final_result.xlsx')
+  }, [outputMap, nodes])
+
+  const handleSeparateDownload = useCallback(() => {
+    if (Object.keys(outputMap).length === 0) {
+      alert('请先执行流程')
+      return
+    }
+    for (const [nodeId, data] of Object.entries(outputMap)) {
+      const node = nodes.find((n) => n.id === nodeId)
+      const cfg = node ? (node.data as FlowNodeData).config as ExcelOutputConfig : null
+      const fileName = cfg?.fileName || 'final_result.xlsx'
+      const sheetName = cfg?.sheetName || 'Result'
+      exportToExcel({ [sheetName]: data }, fileName)
+    }
   }, [outputMap, nodes])
 
   return (
@@ -148,10 +162,17 @@ export function Toolbar() {
       </button>
 
       <button
-        onClick={handleDownloadResults}
+        onClick={handleMergeDownload}
         className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded transition-colors"
       >
-        下载结果
+        合并下载
+      </button>
+
+      <button
+        onClick={handleSeparateDownload}
+        className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded transition-colors"
+      >
+        全部单独下载
       </button>
 
       <div className="h-5 w-px bg-gray-300" />

@@ -1,4 +1,5 @@
 export { executeTierRule } from './tierRule'
+export { executeTierRuleV2 } from './tierRuleV2'
 export { executeFormula } from './formula'
 export { executeFilter } from './filter'
 export { executeConstraint } from './constraint'

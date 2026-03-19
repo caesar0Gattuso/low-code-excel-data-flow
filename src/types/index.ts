@@ -21,6 +21,7 @@ export enum OperatorType {
   ExcelInput = 'excelInput',
   ExcelOutput = 'excelOutput',
   TierRule = 'tierRule',
+  TierRuleV2 = 'tierRuleV2',
   Formula = 'formula',
   Filter = 'filter',
   Constraint = 'constraint',
@@ -73,19 +74,30 @@ export interface GroupByConfig {
   groupByColumns: string[]
   aggregations: {
     column: string
-    func: 'sum' | 'count' | 'avg' | 'min' | 'max'
+    func: 'sum' | 'count' | 'avg' | 'min' | 'max' | 'countif'
     outputColumn: string
+    operator?: CompareOperator
+    compareValue?: number | string
   }[]
 }
 
 export type CompareOperator = '>' | '>=' | '<' | '<=' | '==' | '!='
 
-/** 条件赋值的单条规则 */
-export interface ConditionalRule {
+/** 单个比较条件 */
+export interface Condition {
   column: string
   operator: CompareOperator
   compareValue: number | string
+}
+
+/** 条件赋值的一条规则：多个条件 + 组合逻辑 */
+export interface ConditionalRule {
+  conditions: Condition[]
+  /** 多个条件的组合方式 */
+  logic: 'and' | 'or'
   result: number | string
+  /** 条件不满足时的结果（可选，填写后该规则即为完整的 if/else） */
+  elseResult?: number | string
 }
 
 export interface ConditionalAssignConfig {
@@ -95,19 +107,36 @@ export interface ConditionalAssignConfig {
   outputColumn: string
 }
 
+/** 阶梯规则V2：匹配后输出规则表中所有列 */
+export interface TierRuleV2Config {
+  /** 原始表中用于匹配的列名 */
+  inputColumn: string
+  /** 规则表中的下限列名 */
+  minColumn: string
+  /** 规则表中的上限列名 */
+  maxColumn: string
+  /** 规则表数据（从 Excel 导入） */
+  ruleTable: DataTable
+}
+
 export interface ExcelInputConfig {
   sheetName: string
   fileName?: string
+  /** 用户选择参与后续流程的列；undefined / 空数组 = 全部列 */
+  selectedColumns?: string[]
 }
 
 export interface ExcelOutputConfig {
   sheetName: string
   fileName: string
+  /** 选择导出的列；undefined = 全部列 */
+  selectedColumns?: string[]
 }
 
 /** 所有算子配置的联合类型 */
 export type OperatorConfig =
   | TierRuleConfig
+  | TierRuleV2Config
   | FormulaConfig
   | FilterConfig
   | ConstraintConfig
@@ -193,8 +222,10 @@ export interface EngineResponse {
   type: 'result' | 'error' | 'progress'
   /** 每个输出节点 id -> 结果数据 */
   outputs?: Record<string, DataTable>
-  /** 每个节点 id -> 预览数据 (前 100 行) */
+  /** 每个节点 id -> 输出预览数据 (前 100 行) */
   previews?: Record<string, DataTable>
+  /** 每个节点 id -> 输入预览数据 (前 100 行) */
+  inputPreviews?: Record<string, DataTable>
   error?: string
   progress?: { nodeId: string; status: 'running' | 'done' }
 }

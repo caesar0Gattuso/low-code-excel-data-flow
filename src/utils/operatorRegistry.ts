@@ -24,6 +24,20 @@ export const operatorRegistry: OperatorMeta[] = [
     },
   },
   {
+    type: OperatorType.TierRuleV2,
+    category: NodeCategory.Transformer,
+    label: '阶梯规则V2',
+    description: '阶梯匹配后输出规则表所有列',
+    inputs: 1,
+    outputs: 1,
+    defaultConfig: {
+      inputColumn: '',
+      minColumn: 'min',
+      maxColumn: 'max',
+      ruleTable: { columns: [], rows: [] },
+    },
+  },
+  {
     type: OperatorType.Formula,
     category: NodeCategory.Transformer,
     label: '公式计算',
@@ -58,8 +72,12 @@ export const operatorRegistry: OperatorMeta[] = [
     inputs: 1,
     outputs: 1,
     defaultConfig: {
-      rules: [{ column: '', operator: '>=' as const, compareValue: 0, result: 0 }],
-      defaultValue: 0,
+      rules: [{
+        conditions: [{ column: '', operator: '>=' as const, compareValue: '' }],
+        logic: 'and' as const,
+        result: '',
+      }],
+      defaultValue: '',
       outputColumn: 'condition_result',
     },
   },
@@ -91,7 +109,7 @@ export const operatorRegistry: OperatorMeta[] = [
     description: '导出结果为 Excel 文件',
     inputs: 1,
     outputs: 0,
-    defaultConfig: { sheetName: 'Result', fileName: 'settlement_result.xlsx' },
+    defaultConfig: { sheetName: 'Result', fileName: 'final_result.xlsx' },
   },
 ]
 

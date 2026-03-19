@@ -8,11 +8,15 @@ import type {
   FilterConfig,
   ConstraintConfig,
   ConditionalAssignConfig,
+  TierRuleV2Config,
   JoinConfig,
   GroupByConfig,
+  ExcelOutputConfig,
+  DataRow,
 } from '@/types'
 import {
   executeTierRule,
+  executeTierRuleV2,
   executeFormula,
   executeFilter,
   executeConstraint,
@@ -23,6 +27,7 @@ import {
 
 interface ExecutionResult {
   previews: Record<string, DataTable>
+  inputPreviews: Record<string, DataTable>
   outputs: Record<string, DataTable>
 }
 
@@ -39,6 +44,7 @@ export function executeDAG(
   const sorted = topologicalSort(nodes, edges)
   const nodeOutputs: Record<string, DataTable> = {}
   const previews: Record<string, DataTable> = {}
+  const inputPreviews: Record<string, DataTable> = {}
   const finalOutputs: Record<string, DataTable> = {}
 
   for (const nodeId of sorted) {
@@ -65,6 +71,10 @@ export function executeDAG(
       const leftData = leftEdge ? nodeOutputs[leftEdge.source] : undefined
       const rightData = rightEdge ? nodeOutputs[rightEdge.source] : undefined
 
+      if (leftData) {
+        inputPreviews[nodeId] = { columns: leftData.columns, rows: leftData.rows.slice(0, 100) }
+      }
+
       if (leftData && rightData) {
         nodeOutputs[nodeId] = executeJoin(leftData, rightData, config as JoinConfig)
       } else {
@@ -74,9 +84,14 @@ export function executeDAG(
       const inputEdge = incomingEdges[0]
       const inputTable = inputEdge ? nodeOutputs[inputEdge.source] : { columns: [], rows: [] }
 
+      inputPreviews[nodeId] = { columns: inputTable.columns, rows: inputTable.rows.slice(0, 100) }
+
       switch (opType) {
         case 'tierRule':
           nodeOutputs[nodeId] = executeTierRule(inputTable, config as TierRuleConfig)
+          break
+        case 'tierRuleV2':
+          nodeOutputs[nodeId] = executeTierRuleV2(inputTable, config as TierRuleV2Config)
           break
         case 'formula':
           nodeOutputs[nodeId] = executeFormula(inputTable, config as FormulaConfig)
@@ -93,10 +108,26 @@ export function executeDAG(
         case 'groupBy':
           nodeOutputs[nodeId] = executeGroupBy(inputTable, config as GroupByConfig)
           break
-        case 'excelOutput':
-          nodeOutputs[nodeId] = inputTable
-          finalOutputs[nodeId] = inputTable
+        case 'excelOutput': {
+          const outConfig = config as ExcelOutputConfig
+          const selCols = outConfig.selectedColumns
+          if (selCols && selCols.length > 0 && selCols.length < inputTable.columns.length) {
+            const colSet = new Set(selCols)
+            const filteredCols = inputTable.columns.filter((c) => colSet.has(c))
+            const filteredRows: DataRow[] = inputTable.rows.map((row) => {
+              const r: DataRow = {}
+              for (const c of filteredCols) r[c] = row[c]
+              return r
+            })
+            const filtered: DataTable = { columns: filteredCols, rows: filteredRows }
+            nodeOutputs[nodeId] = filtered
+            finalOutputs[nodeId] = filtered
+          } else {
+            nodeOutputs[nodeId] = inputTable
+            finalOutputs[nodeId] = inputTable
+          }
           break
+        }
         default:
           nodeOutputs[nodeId] = inputTable
       }
@@ -113,7 +144,7 @@ export function executeDAG(
     onProgress?.(nodeId, 'done')
   }
 
-  return { previews, outputs: finalOutputs }
+  return { previews, inputPreviews, outputs: finalOutputs }
 }
 
 /**
