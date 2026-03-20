@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow,
   Background,
@@ -14,15 +14,23 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useFlowStore } from '@/store/useFlowStore'
 import { nodeTypes } from '@/nodes'
+import { RoutedEdge } from '@/nodes/RoutedEdge'
 import { getOperatorMeta } from '@/utils/operatorRegistry'
+import { ContextMenu } from './ContextMenu'
 import type { OperatorType, FlowNodeData } from '@/types'
 
 let nodeIdCounter = 0
 
-const defaultEdgeOptions = {
-  style: { strokeWidth: 2, stroke: '#94a3b8' },
-  animated: false,
+const edgeTypes = {
+  routed: RoutedEdge,
 }
+
+type MenuState = {
+  x: number
+  y: number
+  flowPos: { x: number; y: number }
+  nodeId?: string
+} | null
 
 export function FlowCanvas() {
   const nodes = useFlowStore((s) => s.nodes)
@@ -31,9 +39,69 @@ export function FlowCanvas() {
   const onEdgesChange = useFlowStore((s) => s.onEdgesChange)
   const onConnect = useFlowStore((s) => s.onConnect)
   const addNode = useFlowStore((s) => s.addNode)
+  const setEdges = useFlowStore((s) => s.setEdges)
   const selectNode = useFlowStore((s) => s.selectNode)
   const selectedNodeId = useFlowStore((s) => s.selectedNodeId)
+  const clipboard = useFlowStore((s) => s.clipboard)
+  const copyNodes = useFlowStore((s) => s.copyNodes)
+  const pasteNodes = useFlowStore((s) => s.pasteNodes)
+  const deleteNodes = useFlowStore((s) => s.deleteNodes)
+  const edgeStyle = useFlowStore((s) => s.edgeStyle)
+  const clearEdgeWaypoints = useFlowStore((s) => s.clearEdgeWaypoints)
   const { screenToFlowPosition } = useReactFlow()
+
+  const [menu, setMenu] = useState<MenuState>(null)
+  const lastFlowPosRef = useRef<{ x: number; y: number }>({ x: 100, y: 100 })
+
+  // 节点被手动拖动后，waypoints 失效，清除
+  const waypointsClearedRef = useRef(false)
+
+  const closeMenu = useCallback(() => setMenu(null), [])
+
+  // 根据 edgeStyle 决定默认边类型
+  const edgeTypeName = edgeStyle === 'routed' ? 'routed' : edgeStyle === 'smoothstep' ? 'smoothstep' : 'default'
+
+  const defaultEdgeOptions = useMemo(() => ({
+    style: { strokeWidth: 2, stroke: '#94a3b8' },
+    animated: false,
+    type: edgeTypeName,
+  }), [edgeTypeName])
+
+  // edgeStyle 切换时，同步更新现有边的 type
+  const edgeTypeRef = useRef(edgeTypeName)
+  useEffect(() => {
+    if (edgeTypeRef.current === edgeTypeName) return
+    edgeTypeRef.current = edgeTypeName
+    setEdges(
+      useFlowStore.getState().edges.map((e) => ({ ...e, type: edgeTypeName }))
+    )
+  }, [edgeTypeName, setEdges])
+
+  const onMouseMove = useCallback(
+    (e: React.MouseEvent) => {
+      lastFlowPosRef.current = screenToFlowPosition({ x: e.clientX, y: e.clientY })
+    },
+    [screenToFlowPosition],
+  )
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const active = document.activeElement
+      if (
+        active instanceof HTMLInputElement ||
+        active instanceof HTMLTextAreaElement ||
+        active instanceof HTMLSelectElement
+      ) return
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        if (selectedNodeId) copyNodes([selectedNodeId])
+      } else if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+        if (clipboard.length > 0) pasteNodes(lastFlowPosRef.current)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [selectedNodeId, clipboard, copyNodes, pasteNodes])
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault()
@@ -45,15 +113,10 @@ export function FlowCanvas() {
       event.preventDefault()
       const operatorType = event.dataTransfer.getData('application/reactflow-operator') as OperatorType
       if (!operatorType) return
-
       const meta = getOperatorMeta(operatorType)
       if (!meta) return
 
-      const position = screenToFlowPosition({
-        x: event.clientX,
-        y: event.clientY,
-      })
-
+      const position = screenToFlowPosition({ x: event.clientX, y: event.clientY })
       const newNode: Node<FlowNodeData> = {
         id: `node_${++nodeIdCounter}_${Date.now()}`,
         type: 'operator',
@@ -65,7 +128,6 @@ export function FlowCanvas() {
           config: structuredClone(meta.defaultConfig),
         },
       }
-
       addNode(newNode)
     },
     [addNode, screenToFlowPosition],
@@ -73,6 +135,14 @@ export function FlowCanvas() {
 
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
+      // 有节点位置变化时清除 waypoints（仅在精确路由模式下）
+      const hasDrag = changes.some((c) => c.type === 'position' && c.dragging)
+      if (hasDrag && edgeStyle === 'routed' && !waypointsClearedRef.current) {
+        waypointsClearedRef.current = true
+        clearEdgeWaypoints()
+      }
+      if (!hasDrag) waypointsClearedRef.current = false
+
       const removedIds = changes
         .filter((c): c is NodeChange & { type: 'remove'; id: string } => c.type === 'remove')
         .map((c) => c.id)
@@ -81,19 +151,45 @@ export function FlowCanvas() {
       }
       onNodesChange(changes)
     },
-    [onNodesChange, selectNode, selectedNodeId],
+    [onNodesChange, selectNode, selectedNodeId, edgeStyle, clearEdgeWaypoints],
   )
 
   const onNodeClick = useCallback(
-    (_event: React.MouseEvent, node: Node) => {
-      selectNode(node.id)
-    },
+    (_event: React.MouseEvent, node: Node) => selectNode(node.id),
     [selectNode],
   )
 
   const onPaneClick = useCallback(() => {
     selectNode(null)
-  }, [selectNode])
+    closeMenu()
+  }, [selectNode, closeMenu])
+
+  const onNodeContextMenu = useCallback(
+    (event: React.MouseEvent, node: Node) => {
+      event.preventDefault()
+      selectNode(node.id)
+      setMenu({
+        x: event.clientX,
+        y: event.clientY,
+        flowPos: screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+        nodeId: node.id,
+      })
+    },
+    [selectNode, screenToFlowPosition],
+  )
+
+  const onPaneContextMenu = useCallback(
+    (event: React.MouseEvent | MouseEvent) => {
+      event.preventDefault()
+      const e = event as React.MouseEvent
+      setMenu({
+        x: e.clientX,
+        y: e.clientY,
+        flowPos: screenToFlowPosition({ x: e.clientX, y: e.clientY }),
+      })
+    },
+    [screenToFlowPosition],
+  )
 
   const isValidConnection = useCallback(
     (connection: Edge | Connection) => {
@@ -106,8 +202,25 @@ export function FlowCanvas() {
     [nodes, edges],
   )
 
+  const menuItems = menu
+    ? menu.nodeId
+      ? [
+          { label: '复制节点', icon: '⎘', onClick: () => copyNodes([menu.nodeId!]) },
+          { label: '---', icon: '', onClick: () => {} },
+          { label: '删除节点', icon: '🗑', danger: true, onClick: () => deleteNodes([menu.nodeId!]) },
+        ]
+      : [
+          {
+            label: clipboard.length > 0 ? `粘贴节点 (${clipboard.length})` : '粘贴节点',
+            icon: '📋',
+            disabled: clipboard.length === 0,
+            onClick: () => pasteNodes(menu.flowPos),
+          },
+        ]
+    : []
+
   return (
-    <div className="flex-1 h-full">
+    <div className="flex-1 h-full" onMouseMove={onMouseMove}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -118,7 +231,10 @@ export function FlowCanvas() {
         onDrop={onDrop}
         onNodeClick={onNodeClick}
         onPaneClick={onPaneClick}
+        onNodeContextMenu={onNodeContextMenu}
+        onPaneContextMenu={onPaneContextMenu}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         defaultEdgeOptions={defaultEdgeOptions}
         isValidConnection={isValidConnection}
         edgesFocusable
@@ -129,11 +245,12 @@ export function FlowCanvas() {
       >
         <Background gap={16} size={1} />
         <Controls />
-        <MiniMap
-          nodeStrokeWidth={3}
-          className="!bg-white !border-gray-200"
-        />
+        <MiniMap nodeStrokeWidth={3} className="!bg-white !border-gray-200" />
       </ReactFlow>
+
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={closeMenu} />
+      )}
     </div>
   )
 }
