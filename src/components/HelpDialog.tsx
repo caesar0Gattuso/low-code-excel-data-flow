@@ -146,10 +146,26 @@ function ToolbarTab() {
       ],
     },
     {
+      title: '视图模式',
+      rows: [
+        {
+          label: '⚡ 简洁模式',
+          desc: '切换到「简洁执行模式」：隐藏流程图，只展示输入文件上传卡片、执行按钮和输出下载卡片。适合将模板分发给不懂流程图的最终用户使用',
+        },
+        {
+          label: '🎨 设计视图',
+          desc: '从简洁模式返回完整设计视图，可查看和编辑流程图',
+        },
+      ],
+    },
+    {
       title: '模板管理',
       rows: [
-        { label: '导出模板', desc: '将当前全部节点、连线、规则配置保存为 .flow.json 文件，方便复用和分享' },
-        { label: '导入模板', desc: '从 .flow.json 文件恢复完整流程图（会覆盖当前画布，操作前建议先导出备份）' },
+        {
+          label: '导出模板',
+          desc: '点击后弹出选择对话框：「设计视图（默认）」导出后接收者会看到完整流程图；「简洁执行模式」导出后接收者打开模板将自动进入简洁模式，无需了解流程图结构',
+        },
+        { label: '导入模板', desc: '从 .flow.json 文件恢复完整流程图（会覆盖当前画布，操作前建议先导出备份）。若模板指定了默认视图模式，导入后自动切换' },
       ],
     },
   ]
@@ -219,6 +235,19 @@ function ToolbarTab() {
         {
           keys: <Kbd>工具栏 ✋/⬚ 按钮</Kbd>,
           desc: '切换拖拽模式与框选模式；框选模式下直接拖动即可框选，无需按 Shift',
+        },
+      ],
+    },
+    {
+      group: '视图模式',
+      rows: [
+        {
+          keys: <Kbd>工具栏 ⚡ 简洁模式</Kbd>,
+          desc: '切换到简洁执行模式，隐藏流程图，仅保留文件上传和下载操作。简洁模式工具栏会同步精简，去除设计相关按钮',
+        },
+        {
+          keys: <Kbd>工具栏 🎨 设计视图</Kbd>,
+          desc: '从简洁模式返回完整设计视图',
         },
       ],
     },
@@ -429,6 +458,17 @@ function WorkflowTab() {
       title: '7. 保存模板',
       desc: '点击「导出模板」将当前流程图和规则配置保存为 .flow.json 文件，下次可通过「导入模板」恢复。',
     },
+    {
+      title: '8. 发布给最终用户（可选）',
+      desc: '点击「导出模板」→ 选择「简洁执行模式」导出。接收者导入模板后自动进入简洁模式，只看到文件上传卡片和下载按钮，无需了解流程图结构，上手零门槛。',
+    },
+  ]
+
+  const simpleModeFeatures = [
+    { icon: '📂', label: '输入卡片', desc: '每个 Excel 输入节点对应一张上传卡片，支持多 Sheet 切换' },
+    { icon: '▶', label: '一键执行', desc: '所有文件上传完毕后，执行按钮自动可用；执行中卡片边框变蓝' },
+    { icon: '📥', label: '输出卡片', desc: '执行成功后，每个输出节点的下载按钮变绿，点击即可下载对应 Excel 文件' },
+    { icon: '🎨', label: '随时返回', desc: '顶部工具栏「设计视图」按钮随时切回完整画布；设计者不受影响' },
   ]
 
   return (
@@ -448,6 +488,32 @@ function WorkflowTab() {
             </div>
           ))}
         </div>
+      </div>
+
+      {/* 简洁模式说明 */}
+      <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-base">⚡</span>
+          <h3 className="text-sm font-bold text-amber-800">简洁执行模式</h3>
+          <span className="text-[10px] bg-amber-200 text-amber-700 px-1.5 py-0.5 rounded-full font-medium">分发给最终用户</span>
+        </div>
+        <p className="text-xs text-amber-700 mb-3 leading-relaxed">
+          适合将设计好的模板分发给不熟悉流程图的最终用户（如业务、运营、财务）。用户只需上传数据文件、点击执行、下载结果，无需了解内部流程。
+        </p>
+        <div className="grid grid-cols-2 gap-2">
+          {simpleModeFeatures.map((f) => (
+            <div key={f.label} className="flex items-start gap-2 bg-white rounded-lg border border-amber-100 px-3 py-2">
+              <span className="text-sm flex-shrink-0">{f.icon}</span>
+              <div>
+                <p className="text-[11px] font-semibold text-gray-700">{f.label}</p>
+                <p className="text-[11px] text-gray-500 mt-0.5 leading-relaxed">{f.desc}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+        <p className="text-[11px] text-amber-600 mt-3">
+          💡 导出时选择「简洁执行模式」→ 分发 .flow.json → 接收者导入后自动进入简洁模式
+        </p>
       </div>
 
       <div>
