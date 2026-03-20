@@ -4,6 +4,7 @@ import type {
   TierRuleConfig,
   TierRuleV2Config,
   FormulaConfig,
+  FormulaV2Config,
   FilterConfig,
   ConstraintConfig,
   ConditionalAssignConfig,
@@ -16,6 +17,9 @@ import type {
   ExcelOutputConfig,
   TierBracket,
   DataTable,
+  SortConfig,
+  DeduplicateConfig,
+  ColumnOpsConfig,
 } from '@/types'
 import { parseExcelFile, downloadTierTemplate, exportToExcel, exportWithSplit } from '@/utils/excelUtils'
 import { useCallback, useRef, useState } from 'react'
@@ -60,6 +64,17 @@ export function PropertiesPanel() {
           <p className="text-[10px] text-gray-400 mt-0.5">自定义名称，方便在画布上识别</p>
         </div>
 
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">节点备注</label>
+          <textarea
+            className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-indigo-400 focus:outline-none resize-none"
+            rows={2}
+            value={data.note ?? ''}
+            onChange={(e) => updateNodeData(node.id, { note: e.target.value || undefined })}
+            placeholder="可选，添加备注说明..."
+          />
+        </div>
+
         <ConfigForm nodeId={node.id} data={data} updateNodeData={updateNodeData} />
 
         {inputPreview && (
@@ -101,6 +116,8 @@ function ConfigForm({
       return <TierRuleV2Form config={data.config as TierRuleV2Config} onUpdate={update} />
     case 'formula':
       return <FormulaForm config={data.config as FormulaConfig} onUpdate={update} />
+    case 'formulaV2':
+      return <FormulaV2Form config={data.config as FormulaV2Config} onUpdate={update} />
     case 'filter':
       return <FilterForm config={data.config as FilterConfig} onUpdate={update} />
     case 'constraint':
@@ -108,9 +125,15 @@ function ConfigForm({
     case 'conditionalAssign':
       return <ConditionalAssignForm config={data.config as ConditionalAssignConfig} onUpdate={update} />
     case 'join':
-      return <JoinForm config={data.config as JoinConfig} onUpdate={update} />
+      return <JoinForm nodeId={nodeId} config={data.config as JoinConfig} onUpdate={update} />
     case 'groupBy':
       return <GroupByForm config={data.config as GroupByConfig} onUpdate={update} />
+    case 'sort':
+      return <SortForm nodeId={nodeId} config={data.config as SortConfig} onUpdate={update} />
+    case 'deduplicate':
+      return <DeduplicateForm nodeId={nodeId} config={data.config as DeduplicateConfig} onUpdate={update} />
+    case 'columnOps':
+      return <ColumnOpsForm nodeId={nodeId} config={data.config as ColumnOpsConfig} onUpdate={update} />
     default:
       return <p className="text-xs text-gray-400">暂无配置项</p>
   }
@@ -885,6 +908,38 @@ function FormulaForm({
   )
 }
 
+function FormulaV2Form({
+  config,
+  onUpdate,
+}: {
+  config: FormulaV2Config
+  onUpdate: (c: FormulaV2Config) => void
+}) {
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className={labelClass}>公式表达式（V2）</label>
+        <textarea
+          className={`${inputClass} font-mono resize-y min-h-[72px]`}
+          value={config.expression}
+          onChange={(e) => onUpdate({ ...config, expression: e.target.value })}
+          placeholder={'IF([绩效] >= 0.9, [基础工资] * 0.2, [基础工资] * 0.1)'}
+          spellCheck={false}
+        />
+        <div className="mt-1.5 text-[10px] text-gray-400 space-y-0.5 leading-relaxed">
+          <p>用 <code className="bg-gray-100 px-1 rounded">[列名]</code> 引用列值</p>
+          <p>支持函数：<code className="bg-gray-100 px-1 rounded">IF</code> <code className="bg-gray-100 px-1 rounded">ROUND</code> <code className="bg-gray-100 px-1 rounded">ABS</code> <code className="bg-gray-100 px-1 rounded">MAX</code> <code className="bg-gray-100 px-1 rounded">MIN</code> <code className="bg-gray-100 px-1 rounded">CONCAT</code> <code className="bg-gray-100 px-1 rounded">UPPER</code> <code className="bg-gray-100 px-1 rounded">LOWER</code> <code className="bg-gray-100 px-1 rounded">TRIM</code> <code className="bg-gray-100 px-1 rounded">LEN</code> <code className="bg-gray-100 px-1 rounded">ISNULL</code></p>
+          <p>比较运算符：<code className="bg-gray-100 px-1 rounded">{'> >= < <= == !='}</code>　逻辑：<code className="bg-gray-100 px-1 rounded">{'&& ||'}</code></p>
+        </div>
+      </div>
+      <div>
+        <label className={labelClass}>输出列名</label>
+        <input className={inputClass} value={config.outputColumn} onChange={(e) => onUpdate({ ...config, outputColumn: e.target.value })} />
+      </div>
+    </div>
+  )
+}
+
 function FilterForm({
   config,
   onUpdate,
@@ -943,27 +998,178 @@ function ConstraintForm({
 }
 
 function JoinForm({
+  nodeId,
   config,
   onUpdate,
 }: {
+  nodeId: string
   config: JoinConfig
   onUpdate: (c: JoinConfig) => void
 }) {
+  const edges = useFlowStore((s) => s.edges)
+  const previewMap = useFlowStore((s) => s.previewMap)
+
+  // 找到 left / right 上游节点 id
+  const leftEdge = edges.find((e) => e.target === nodeId && e.targetHandle === 'left')
+    ?? edges.find((e) => e.target === nodeId)
+  const rightEdge = edges.find((e) => e.target === nodeId && e.targetHandle === 'right')
+
+  const leftCols = leftEdge ? (previewMap[leftEdge.source]?.columns ?? []) : []
+  const rightCols = rightEdge ? (previewMap[rightEdge.source]?.columns ?? []) : []
+
+  // 兼容旧格式 (leftKey / rightKey) → 迁移到数组
+  const leftKeys: string[] = config.leftKeys?.length
+    ? config.leftKeys
+    : (config as unknown as { leftKey?: string }).leftKey
+      ? [(config as unknown as { leftKey: string }).leftKey]
+      : []
+  const rightKeys: string[] = config.rightKeys?.length
+    ? config.rightKeys
+    : (config as unknown as { rightKey?: string }).rightKey
+      ? [(config as unknown as { rightKey: string }).rightKey]
+      : []
+
+  const conflictStrategy = config.conflictStrategy ?? 'left_wins'
+
+  const pairCount = Math.max(leftKeys.length, rightKeys.length, 1)
+  const pairs = Array.from({ length: pairCount }, (_, i) => ({
+    left: leftKeys[i] ?? '',
+    right: rightKeys[i] ?? '',
+  }))
+
+  const updatePair = (idx: number, side: 'left' | 'right', val: string) => {
+    const newLeft = [...leftKeys]
+    const newRight = [...rightKeys]
+    while (newLeft.length < pairCount) newLeft.push('')
+    while (newRight.length < pairCount) newRight.push('')
+    if (side === 'left') newLeft[idx] = val
+    else newRight[idx] = val
+    onUpdate({ ...config, leftKeys: newLeft, rightKeys: newRight })
+  }
+
+  const addPair = () => {
+    onUpdate({ ...config, leftKeys: [...leftKeys, ''], rightKeys: [...rightKeys, ''] })
+  }
+
+  const removePair = (idx: number) => {
+    const newLeft = leftKeys.filter((_, i) => i !== idx)
+    const newRight = rightKeys.filter((_, i) => i !== idx)
+    onUpdate({ ...config, leftKeys: newLeft.length ? newLeft : [''], rightKeys: newRight.length ? newRight : [''] })
+  }
+
+  const joinTypeOptions: { value: JoinConfig['joinType']; label: string; desc: string }[] = [
+    { value: 'inner', label: '内连接', desc: '仅保留两边都匹配的行' },
+    { value: 'left', label: '左连接', desc: '保留左表全部行，右表无匹配填空' },
+    { value: 'right', label: '右连接', desc: '保留右表全部行，左表无匹配填空' },
+    { value: 'full', label: '全连接', desc: '两边都全量保留' },
+  ]
+
+  const conflictOptions: { value: JoinConfig['conflictStrategy']; label: string }[] = [
+    { value: 'left_wins', label: '左表优先（同名列取左值）' },
+    { value: 'right_wins', label: '右表优先（同名列取右值）' },
+    { value: 'rename_right', label: '右表重命名（冲突列加 _right 后缀）' },
+    { value: 'rename_both', label: '两边重命名（冲突列各加 _left / _right）' },
+  ]
+
+  const colSelect = (cols: string[], val: string, onChange: (v: string) => void) => (
+    cols.length > 0 ? (
+      <select className={inputClass} value={val} onChange={(e) => onChange(e.target.value)}>
+        <option value="">-- 选择列 --</option>
+        {cols.map((c) => <option key={c} value={c}>{c}</option>)}
+      </select>
+    ) : (
+      <input
+        className={inputClass}
+        value={val}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="输入列名"
+      />
+    )
+  )
+
   return (
-    <div className="space-y-3">
-      <div>
-        <label className={labelClass}>左表关联键</label>
-        <input className={inputClass} value={config.leftKey} onChange={(e) => onUpdate({ ...config, leftKey: e.target.value })} />
-      </div>
-      <div>
-        <label className={labelClass}>右表关联键</label>
-        <input className={inputClass} value={config.rightKey} onChange={(e) => onUpdate({ ...config, rightKey: e.target.value })} />
-      </div>
+    <div className="space-y-4">
+      {/* 关联类型 */}
       <div>
         <label className={labelClass}>关联类型</label>
-        <select className={inputClass} value={config.joinType} onChange={(e) => onUpdate({ ...config, joinType: e.target.value as 'inner' | 'left' })}>
-          <option value="left">左连接 (Left Join)</option>
-          <option value="inner">内连接 (Inner Join)</option>
+        <div className="grid grid-cols-2 gap-1">
+          {joinTypeOptions.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => onUpdate({ ...config, leftKeys, rightKeys, joinType: opt.value, conflictStrategy })}
+              title={opt.desc}
+              className={[
+                'px-2 py-1.5 text-xs rounded border text-left transition-colors',
+                config.joinType === opt.value
+                  ? 'bg-indigo-600 text-white border-indigo-600'
+                  : 'bg-white text-gray-600 border-gray-300 hover:border-indigo-400',
+              ].join(' ')}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <p className="mt-1 text-[10px] text-gray-400 italic">
+          {joinTypeOptions.find((o) => o.value === config.joinType)?.desc}
+        </p>
+      </div>
+
+      {/* 关联键对 */}
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <label className={labelClass + ' mb-0'}>关联键</label>
+          <button
+            type="button"
+            onClick={addPair}
+            className="text-[10px] text-indigo-600 hover:underline"
+          >
+            + 添加联合键
+          </button>
+        </div>
+        <div className="space-y-2">
+          {pairs.map((pair, idx) => (
+            <div key={idx} className="flex items-center gap-1">
+              <div className="flex-1">
+                <div className="text-[9px] text-gray-400 mb-0.5">左表</div>
+                {colSelect(leftCols, pair.left, (v) => updatePair(idx, 'left', v))}
+              </div>
+              <div className="text-gray-400 text-xs pt-4">=</div>
+              <div className="flex-1">
+                <div className="text-[9px] text-gray-400 mb-0.5">右表</div>
+                {colSelect(rightCols, pair.right, (v) => updatePair(idx, 'right', v))}
+              </div>
+              {pairs.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => removePair(idx)}
+                  className="text-red-400 hover:text-red-600 text-xs pt-4"
+                  title="移除此键"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+        {leftCols.length === 0 && (
+          <p className="mt-1 text-[10px] text-gray-400 italic">执行一次流程后可从下拉选择列名</p>
+        )}
+      </div>
+
+      {/* 同名列冲突策略 */}
+      <div>
+        <label className={labelClass}>同名列冲突策略</label>
+        <select
+          className={inputClass}
+          value={conflictStrategy}
+          onChange={(e) =>
+            onUpdate({ ...config, leftKeys, rightKeys, conflictStrategy: e.target.value as JoinConfig['conflictStrategy'] })
+          }
+        >
+          {conflictOptions.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
         </select>
       </div>
     </div>
@@ -1354,6 +1560,201 @@ function DataPreview({ table }: { table: DataTable }) {
       </table>
       {table.rows.length > 20 && (
         <div className="text-center py-1 text-gray-400">... 共 {table.rows.length} 行</div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// SortForm
+// ---------------------------------------------------------------------------
+function SortForm({ nodeId, config, onUpdate }: { nodeId: string; config: SortConfig; onUpdate: (c: SortConfig) => void }) {
+  const inputPreview = useFlowStore((s) => s.inputPreviewMap[nodeId])
+  const preview = useFlowStore((s) => s.previewMap[nodeId])
+  const cols = inputPreview?.columns ?? preview?.columns ?? []
+
+  const rules = config.rules?.length ? config.rules : [{ column: '', order: 'asc' as const }]
+
+  const updateRule = (idx: number, field: 'column' | 'order', val: string) => {
+    const next = rules.map((r, i) => i === idx ? { ...r, [field]: val } : r)
+    onUpdate({ ...config, rules: next })
+  }
+  const addRule = () => onUpdate({ ...config, rules: [...rules, { column: '', order: 'asc' as const }] })
+  const removeRule = (idx: number) => {
+    const next = rules.filter((_, i) => i !== idx)
+    onUpdate({ ...config, rules: next.length ? next : [{ column: '', order: 'asc' as const }] })
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <label className={labelClass + ' mb-0'}>排序规则（优先级从上到下）</label>
+        <button type="button" onClick={addRule} className="text-[10px] text-indigo-600 hover:underline">+ 添加</button>
+      </div>
+      {rules.map((rule, idx) => (
+        <div key={idx} className="flex items-center gap-2">
+          <div className="flex-1">
+            {cols.length > 0 ? (
+              <select className={inputClass} value={rule.column} onChange={(e) => updateRule(idx, 'column', e.target.value)}>
+                <option value="">-- 选择列 --</option>
+                {cols.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            ) : (
+              <input className={inputClass} value={rule.column} onChange={(e) => updateRule(idx, 'column', e.target.value)} placeholder="列名" />
+            )}
+          </div>
+          <select className="px-2 py-1.5 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-indigo-400 focus:outline-none" value={rule.order} onChange={(e) => updateRule(idx, 'order', e.target.value as 'asc' | 'desc')}>
+            <option value="asc">↑ 升序</option>
+            <option value="desc">↓ 降序</option>
+          </select>
+          {rules.length > 1 && (
+            <button type="button" onClick={() => removeRule(idx)} className="text-red-400 hover:text-red-600 text-xs">✕</button>
+          )}
+        </div>
+      ))}
+      {cols.length === 0 && <p className="text-[10px] text-gray-400 italic">执行一次流程后可从下拉选择列名</p>}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// DeduplicateForm
+// ---------------------------------------------------------------------------
+function DeduplicateForm({ nodeId, config, onUpdate }: { nodeId: string; config: DeduplicateConfig; onUpdate: (c: DeduplicateConfig) => void }) {
+  const inputPreview = useFlowStore((s) => s.inputPreviewMap[nodeId])
+  const preview = useFlowStore((s) => s.previewMap[nodeId])
+  const cols = inputPreview?.columns ?? preview?.columns ?? []
+
+  const keyColumns = config.keyColumns ?? []
+  const toggleCol = (col: string) => {
+    const next = keyColumns.includes(col) ? keyColumns.filter((c) => c !== col) : [...keyColumns, col]
+    onUpdate({ ...config, keyColumns: next })
+  }
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className={labelClass}>唯一键列（留空 = 全列去重）</label>
+        {cols.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5 mt-1">
+            {cols.map((c) => (
+              <label key={c} className="flex items-center gap-1 text-xs cursor-pointer select-none">
+                <input type="checkbox" checked={keyColumns.includes(c)} onChange={() => toggleCol(c)} className="accent-indigo-600" />
+                <span className={keyColumns.includes(c) ? 'text-indigo-700 font-medium' : 'text-gray-600'}>{c}</span>
+              </label>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[10px] text-gray-400 italic mt-1">执行一次流程后可从列表勾选</p>
+        )}
+      </div>
+      <div>
+        <label className={labelClass}>保留哪条</label>
+        <div className="flex gap-2">
+          {(['first', 'last'] as const).map((v) => (
+            <button key={v} type="button"
+              onClick={() => onUpdate({ ...config, keep: v })}
+              className={`flex-1 py-1.5 text-xs rounded border transition-colors ${config.keep === v ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-600 border-gray-300 hover:border-indigo-400'}`}
+            >
+              {v === 'first' ? '保留第一条' : '保留最后一条'}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ColumnOpsForm
+// ---------------------------------------------------------------------------
+function ColumnOpsForm({ nodeId, config, onUpdate }: { nodeId: string; config: ColumnOpsConfig; onUpdate: (c: ColumnOpsConfig) => void }) {
+  const inputPreview = useFlowStore((s) => s.inputPreviewMap[nodeId])
+  const preview = useFlowStore((s) => s.previewMap[nodeId])
+  const sourceCols = inputPreview?.columns ?? preview?.columns ?? []
+
+  const columns = config.columns ?? []
+
+  // 初始化：当上游列可用但 columns 为空时，自动填入所有列
+  const initFromSource = () => {
+    if (sourceCols.length > 0 && columns.length === 0) {
+      onUpdate({ ...config, columns: sourceCols.map((c) => ({ source: c, output: c })) })
+    }
+  }
+
+  const toggleCol = (col: string) => {
+    const exists = columns.find((c) => c.source === col)
+    if (exists) {
+      onUpdate({ ...config, columns: columns.filter((c) => c.source !== col) })
+    } else {
+      onUpdate({ ...config, columns: [...columns, { source: col, output: col }] })
+    }
+  }
+
+  const renameCol = (source: string, newOutput: string) => {
+    onUpdate({ ...config, columns: columns.map((c) => c.source === source ? { ...c, output: newOutput } : c) })
+  }
+
+  const moveUp = (idx: number) => {
+    if (idx === 0) return
+    const next = [...columns]
+    ;[next[idx - 1], next[idx]] = [next[idx], next[idx - 1]]
+    onUpdate({ ...config, columns: next })
+  }
+  const moveDown = (idx: number) => {
+    if (idx === columns.length - 1) return
+    const next = [...columns]
+    ;[next[idx], next[idx + 1]] = [next[idx + 1], next[idx]]
+    onUpdate({ ...config, columns: next })
+  }
+
+  const activeSet = new Set(columns.map((c) => c.source))
+
+  return (
+    <div className="space-y-3">
+      {/* 列选择 */}
+      {sourceCols.length > 0 ? (
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <label className={labelClass + ' mb-0'}>选择输出列</label>
+            <button type="button" onClick={initFromSource} className="text-[10px] text-indigo-600 hover:underline">全选</button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {sourceCols.map((c) => (
+              <label key={c} className="flex items-center gap-1 text-xs cursor-pointer select-none">
+                <input type="checkbox" checked={activeSet.has(c)} onChange={() => toggleCol(c)} className="accent-indigo-600" />
+                <span className={activeSet.has(c) ? 'text-indigo-700 font-medium' : 'text-gray-400'}>{c}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <p className="text-[10px] text-gray-400 italic">执行一次流程后可选择列</p>
+      )}
+
+      {/* 重命名 + 排序 */}
+      {columns.length > 0 && (
+        <div>
+          <label className={labelClass}>输出列 & 重命名（可拖排序）</label>
+          <div className="space-y-1">
+            {columns.map((col, idx) => (
+              <div key={col.source} className="flex items-center gap-1">
+                <div className="flex flex-col">
+                  <button type="button" onClick={() => moveUp(idx)} disabled={idx === 0} className="text-gray-300 hover:text-gray-600 disabled:opacity-20 leading-none text-[10px]">▲</button>
+                  <button type="button" onClick={() => moveDown(idx)} disabled={idx === columns.length - 1} className="text-gray-300 hover:text-gray-600 disabled:opacity-20 leading-none text-[10px]">▼</button>
+                </div>
+                <span className="text-[10px] text-gray-400 w-20 truncate flex-shrink-0">{col.source}</span>
+                <span className="text-gray-300 text-[10px]">→</span>
+                <input
+                  className="flex-1 px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-indigo-400 focus:outline-none"
+                  value={col.output}
+                  onChange={(e) => renameCol(col.source, e.target.value)}
+                  placeholder={col.source}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   )
