@@ -12,7 +12,11 @@ export interface DataTable {
 // ---------------------------------------------------------------------------
 export enum NodeCategory {
   Input = 'input',
+  /** 行列加工：对每行计算新列/改值（公式、条件赋值、阶梯规则、保底封顶） */
   Transformer = 'transformer',
+  /** 结构整理：改变表的行/列结构（过滤、排序、去重、列操作） */
+  Restructure = 'restructure',
+  /** 聚合关联：跨行/跨表操作（Join、GroupBy） */
   Aggregator = 'aggregator',
   Output = 'output',
 }
@@ -23,11 +27,15 @@ export enum OperatorType {
   TierRule = 'tierRule',
   TierRuleV2 = 'tierRuleV2',
   Formula = 'formula',
+  FormulaV2 = 'formulaV2',
   Filter = 'filter',
   Constraint = 'constraint',
   ConditionalAssign = 'conditionalAssign',
   Join = 'join',
   GroupBy = 'groupBy',
+  Sort = 'sort',
+  Deduplicate = 'deduplicate',
+  ColumnOps = 'columnOps',
 }
 
 // ---------------------------------------------------------------------------
@@ -52,6 +60,11 @@ export interface FormulaConfig {
   outputColumn: string
 }
 
+export interface FormulaV2Config {
+  expression: string
+  outputColumn: string
+}
+
 export interface FilterConfig {
   column: string
   operator: CompareOperator
@@ -65,9 +78,13 @@ export interface ConstraintConfig {
 }
 
 export interface JoinConfig {
-  leftKey: string
-  rightKey: string
-  joinType: 'inner' | 'left'
+  /** 左表关联键（支持多列联合匹配） */
+  leftKeys: string[]
+  /** 右表关联键（顺序与 leftKeys 对应） */
+  rightKeys: string[]
+  joinType: 'inner' | 'left' | 'right' | 'full'
+  /** 同名列冲突处理策略 */
+  conflictStrategy: 'left_wins' | 'right_wins' | 'rename_right' | 'rename_both'
 }
 
 export interface GroupByConfig {
@@ -137,11 +154,32 @@ export interface ExcelOutputConfig {
   splitMode?: 'sheets' | 'files'
 }
 
+export interface SortConfig {
+  /** 排序规则，按优先级顺序执行 */
+  rules: { column: string; order: 'asc' | 'desc' }[]
+}
+
+export interface DeduplicateConfig {
+  /** 用作唯一键的列名；空数组 = 全列去重 */
+  keyColumns: string[]
+  /** 相同 key 保留哪条：first = 第一条，last = 最后一条 */
+  keep: 'first' | 'last'
+}
+
+export interface ColumnOpsConfig {
+  /** 最终保留并输出的列，顺序即为输出列顺序 */
+  columns: {
+    source: string   // 原列名
+    output: string   // 输出列名（可重命名；与 source 相同表示不改名）
+  }[]
+}
+
 /** 所有算子配置的联合类型 */
 export type OperatorConfig =
   | TierRuleConfig
   | TierRuleV2Config
   | FormulaConfig
+  | FormulaV2Config
   | FilterConfig
   | ConstraintConfig
   | ConditionalAssignConfig
@@ -149,6 +187,9 @@ export type OperatorConfig =
   | GroupByConfig
   | ExcelInputConfig
   | ExcelOutputConfig
+  | SortConfig
+  | DeduplicateConfig
+  | ColumnOpsConfig
 
 // ---------------------------------------------------------------------------
 // 流程图节点
@@ -163,6 +204,8 @@ export interface FlowNodeData {
   category: NodeCategory
   operatorType: OperatorType
   config: OperatorConfig
+  /** 用户备注，显示在节点底部 */
+  note?: string
   /** 运行时输出数据（非序列化） */
   outputPreview?: DataTable
 }
@@ -193,6 +236,8 @@ export interface TemplateData {
   createdAt: string
   nodes: SerializedNode[]
   edges: SerializedEdge[]
+  /** 导入后默认进入的视图模式 */
+  defaultMode?: 'design' | 'simple'
 }
 
 export interface SerializedNode {
@@ -226,10 +271,14 @@ export interface EngineResponse {
   type: 'result' | 'error' | 'progress'
   /** 每个输出节点 id -> 结果数据 */
   outputs?: Record<string, DataTable>
-  /** 每个节点 id -> 输出预览数据 (前 100 行) */
+  /** 每个节点 id -> 输出预览数据（前 200 行） */
   previews?: Record<string, DataTable>
-  /** 每个节点 id -> 输入预览数据 (前 100 行) */
+  /** 每个节点 id -> 输入预览数据（前 200 行） */
   inputPreviews?: Record<string, DataTable>
+  /** 每条边流过的行数 */
+  edgeRowCounts?: Record<string, number>
+  /** 每个节点输出的真实总行数 */
+  previewTotals?: Record<string, number>
   error?: string
-  progress?: { nodeId: string; status: 'running' | 'done' }
+  progress?: { nodeId: string; status: 'running' | 'done' | 'error'; errorMsg?: string }
 }

@@ -1,5 +1,5 @@
 import dagre from '@dagrejs/dagre'
-import type { Node } from '@xyflow/react'
+import type { Node, Edge } from '@xyflow/react'
 
 const NODE_WIDTH = 200
 const NODE_HEIGHT = 80

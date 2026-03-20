@@ -1,6 +1,7 @@
 import { OperatorMeta, OperatorType, NodeCategory } from '@/types'
 
 export const operatorRegistry: OperatorMeta[] = [
+  // ── 数据输入 ─────────────────────────────────────────────
   {
     type: OperatorType.ExcelInput,
     category: NodeCategory.Input,
@@ -10,6 +11,8 @@ export const operatorRegistry: OperatorMeta[] = [
     outputs: 1,
     defaultConfig: { sheetName: 'Sheet1' },
   },
+
+  // ── 行列加工：逐行计算，输出与输入行数相同 ────────────────
   {
     type: OperatorType.TierRule,
     category: NodeCategory.Transformer,
@@ -47,13 +50,13 @@ export const operatorRegistry: OperatorMeta[] = [
     defaultConfig: { expression: '', outputColumn: 'formula_result' },
   },
   {
-    type: OperatorType.Filter,
+    type: OperatorType.FormulaV2,
     category: NodeCategory.Transformer,
-    label: '条件过滤',
-    description: '根据条件筛选或标记数据行',
+    label: '公式计算V2',
+    description: '支持 IF / ROUND / CONCAT 等函数',
     inputs: 1,
     outputs: 1,
-    defaultConfig: { column: '', operator: '>=', value: 0 },
+    defaultConfig: { expression: '', outputColumn: 'formula_result' },
   },
   {
     type: OperatorType.Constraint,
@@ -81,6 +84,46 @@ export const operatorRegistry: OperatorMeta[] = [
       outputColumn: 'condition_result',
     },
   },
+
+  // ── 结构整理：改变表的行/列结构 ─────────────────────────
+  {
+    type: OperatorType.Filter,
+    category: NodeCategory.Restructure,
+    label: '条件过滤',
+    description: '按条件筛选行，减少数据量',
+    inputs: 1,
+    outputs: 1,
+    defaultConfig: { column: '', operator: '>=', value: 0 },
+  },
+  {
+    type: OperatorType.Sort,
+    category: NodeCategory.Restructure,
+    label: '排序',
+    description: '按列升序或降序排列',
+    inputs: 1,
+    outputs: 1,
+    defaultConfig: { rules: [{ column: '', order: 'asc' as const }] },
+  },
+  {
+    type: OperatorType.Deduplicate,
+    category: NodeCategory.Restructure,
+    label: '去重',
+    description: '按指定列组合去除重复行',
+    inputs: 1,
+    outputs: 1,
+    defaultConfig: { keyColumns: [], keep: 'first' as const },
+  },
+  {
+    type: OperatorType.ColumnOps,
+    category: NodeCategory.Restructure,
+    label: '列操作',
+    description: '选择、重命名、重排列',
+    inputs: 1,
+    outputs: 1,
+    defaultConfig: { columns: [] },
+  },
+
+  // ── 聚合关联：跨行/跨表操作 ──────────────────────────────
   {
     type: OperatorType.Join,
     category: NodeCategory.Aggregator,
@@ -88,7 +131,7 @@ export const operatorRegistry: OperatorMeta[] = [
     description: '按键关联两张表',
     inputs: 2,
     outputs: 1,
-    defaultConfig: { leftKey: '', rightKey: '', joinType: 'left' as const },
+    defaultConfig: { leftKeys: [], rightKeys: [], joinType: 'left' as const, conflictStrategy: 'left_wins' as const },
   },
   {
     type: OperatorType.GroupBy,
@@ -102,6 +145,8 @@ export const operatorRegistry: OperatorMeta[] = [
       aggregations: [{ column: '', func: 'sum' as const, outputColumn: 'total' }],
     },
   },
+
+  // ── 数据输出 ─────────────────────────────────────────────
   {
     type: OperatorType.ExcelOutput,
     category: NodeCategory.Output,
