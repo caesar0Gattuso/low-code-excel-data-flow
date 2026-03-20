@@ -4,6 +4,7 @@ import {
   Background,
   Controls,
   MiniMap,
+  SelectionMode,
   useReactFlow,
   type Node,
   type Edge,
@@ -13,16 +14,28 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useFlowStore } from '@/store/useFlowStore'
+import { useTemporalStore } from '@/store/useTemporalStore'
 import { nodeTypes } from '@/nodes'
 import { RoutedEdge } from '@/nodes/RoutedEdge'
-import { getOperatorMeta } from '@/utils/operatorRegistry'
+import { getOperatorMeta, operatorRegistry } from '@/utils/operatorRegistry'
 import { ContextMenu } from './ContextMenu'
-import type { OperatorType, FlowNodeData } from '@/types'
+import { DataPreviewModal } from './DataPreviewModal'
+import type { OperatorType, FlowNodeData, NodeCategory } from '@/types'
 
 let nodeIdCounter = 0
 
 const edgeTypes = {
+  default: RoutedEdge,
+  smoothstep: RoutedEdge,
   routed: RoutedEdge,
+}
+
+const categoryIcon: Record<NodeCategory, string> = {
+  input:       '📂',
+  transformer: '⚙️',
+  restructure: '🔧',
+  aggregator:  '🔗',
+  output:      '📤',
 }
 
 type MenuState = {
@@ -48,6 +61,14 @@ export function FlowCanvas() {
   const deleteNodes = useFlowStore((s) => s.deleteNodes)
   const edgeStyle = useFlowStore((s) => s.edgeStyle)
   const clearEdgeWaypoints = useFlowStore((s) => s.clearEdgeWaypoints)
+  const selectionOnDrag = useFlowStore((s) => s.selectionOnDrag)
+  const previewNodeId = useFlowStore((s) => s.previewNodeId)
+  const setPreviewNodeId = useFlowStore((s) => s.setPreviewNodeId)
+  const previewMap = useFlowStore((s) => s.previewMap)
+  const inputPreviewMap = useFlowStore((s) => s.inputPreviewMap)
+  const outputMap = useFlowStore((s) => s.outputMap)
+  const previewTotals = useFlowStore((s) => s.previewTotals)
+  const { undo, redo, pastStates, futureStates } = useTemporalStore()
   const { screenToFlowPosition } = useReactFlow()
 
   const [menu, setMenu] = useState<MenuState>(null)
@@ -93,7 +114,15 @@ export function FlowCanvas() {
         active instanceof HTMLSelectElement
       ) return
 
-      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        if (pastStates.length > 0) undo()
+      } else if (
+        (e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))
+      ) {
+        e.preventDefault()
+        if (futureStates.length > 0) redo()
+      } else if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
         if (selectedNodeId) copyNodes([selectedNodeId])
       } else if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
         if (clipboard.length > 0) pasteNodes(lastFlowPosRef.current)
@@ -101,7 +130,7 @@ export function FlowCanvas() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [selectedNodeId, clipboard, copyNodes, pasteNodes])
+  }, [selectedNodeId, clipboard, copyNodes, pasteNodes, undo, redo, pastStates.length, futureStates.length])
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault()
@@ -216,6 +245,27 @@ export function FlowCanvas() {
             disabled: clipboard.length === 0,
             onClick: () => pasteNodes(menu.flowPos),
           },
+          { label: '---', icon: '', onClick: () => {} },
+          ...operatorRegistry.map((op) => ({
+            label: op.label,
+            icon: categoryIcon[op.category as NodeCategory] ?? '◆',
+            onClick: () => {
+              const meta = getOperatorMeta(op.type)
+              if (!meta) return
+              const newNode: Node<FlowNodeData> = {
+                id: `node_${++nodeIdCounter}_${Date.now()}`,
+                type: 'operator',
+                position: menu.flowPos,
+                data: {
+                  label: meta.label,
+                  category: meta.category,
+                  operatorType: meta.type,
+                  config: structuredClone(meta.defaultConfig),
+                },
+              }
+              addNode(newNode)
+            },
+          })),
         ]
     : []
 
@@ -237,6 +287,9 @@ export function FlowCanvas() {
         edgeTypes={edgeTypes}
         defaultEdgeOptions={defaultEdgeOptions}
         isValidConnection={isValidConnection}
+        selectionOnDrag={selectionOnDrag}
+        panOnDrag={selectionOnDrag ? false : true}
+        selectionMode={SelectionMode.Partial}
         edgesFocusable
         edgesReconnectable
         fitView
@@ -250,6 +303,22 @@ export function FlowCanvas() {
 
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={closeMenu} />
+      )}
+
+      {/* 数据预览弹窗：渲染在 React Flow 节点树之外，避免内部 state 变化引发画布重绘 */}
+      {previewNodeId && (
+        <DataPreviewModal
+          title={(() => {
+            const n = nodes.find((nd) => nd.id === previewNodeId)
+            const d = n?.data as FlowNodeData | undefined
+            return d?.customName || d?.label || previewNodeId
+          })()}
+          outputTable={outputMap[previewNodeId]}
+          previewTable={previewMap[previewNodeId]}
+          inputTable={inputPreviewMap[previewNodeId]}
+          totalRows={previewTotals[previewNodeId]}
+          onClose={() => setPreviewNodeId(null)}
+        />
       )}
     </div>
   )
