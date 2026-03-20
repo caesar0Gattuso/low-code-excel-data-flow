@@ -17,7 +17,7 @@ import type {
   TierBracket,
   DataTable,
 } from '@/types'
-import { parseExcelFile, downloadTierTemplate, exportToExcel } from '@/utils/excelUtils'
+import { parseExcelFile, downloadTierTemplate, exportToExcel, exportWithSplit } from '@/utils/excelUtils'
 import { useCallback, useRef, useState } from 'react'
 
 export function PropertiesPanel() {
@@ -338,11 +338,18 @@ function ExcelOutputForm({
     }
     const fileName = config.fileName || 'final_result.xlsx'
     const sheetName = config.sheetName || 'Result'
-    exportToExcel({ [sheetName]: outputData }, fileName)
-  }, [outputData, config.fileName, config.sheetName])
+    const splitCols = config.splitByColumns?.length ? config.splitByColumns : null
+    if (splitCols) {
+      exportWithSplit(outputData, splitCols, config.splitMode ?? 'sheets', sheetName, fileName)
+    } else {
+      exportToExcel({ [sheetName]: outputData }, fileName)
+    }
+  }, [outputData, config.fileName, config.sheetName, config.splitByColumns, config.splitMode])
 
   const selected = config.selectedColumns
   const isAllSelected = !selected || selected.length === availableColumns.length
+  // 实际导出的列 = 拆分列的候选来源
+  const exportColumns = (!selected || selected.length === 0) ? availableColumns : selected
 
   const toggleColumn = (col: string) => {
     let next: string[] | undefined
@@ -416,6 +423,67 @@ function ExcelOutputForm({
       {availableColumns.length === 0 && (
         <p className="text-[10px] text-gray-400 italic">请先执行流程以查看可用列</p>
       )}
+
+      {/* 拆分配置 */}
+      <div className="border-t border-gray-200 pt-3 space-y-2">
+        <label className={labelClass}>
+          按列拆分导出
+          {(config.splitByColumns?.length ?? 0) > 0 && (
+            <span className="ml-1 font-normal text-indigo-500">
+              （已选 {config.splitByColumns!.length} 列）
+            </span>
+          )}
+        </label>
+
+        {exportColumns.length === 0 ? (
+          <p className="text-[10px] text-gray-400 italic">请先执行流程以查看可用列</p>
+        ) : (
+          <>
+            <div className="space-y-0.5 max-h-36 overflow-y-auto border border-gray-200 rounded p-1.5">
+              {exportColumns.map((col) => {
+                const checked = config.splitByColumns?.includes(col) ?? false
+                return (
+                  <label key={col} className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => {
+                        const cur = config.splitByColumns ?? []
+                        const next = checked ? cur.filter((c) => c !== col) : [...cur, col]
+                        onUpdate({ ...config, splitByColumns: next.length > 0 ? next : undefined })
+                      }}
+                      className="w-3.5 h-3.5 rounded border-gray-300 text-indigo-500 focus:ring-indigo-400 flex-shrink-0"
+                    />
+                    <span className={`text-[11px] truncate ${checked ? 'text-gray-700' : 'text-gray-400'}`}>
+                      {col}
+                    </span>
+                  </label>
+                )
+              })}
+            </div>
+            <p className="text-[10px] text-gray-400">勾选列作为拆分依据，多列将组合为复合 Key</p>
+          </>
+        )}
+
+        {(config.splitByColumns?.length ?? 0) > 0 && (
+          <div>
+            <label className={labelClass}>拆分模式</label>
+            <select
+              className={inputClass}
+              value={config.splitMode ?? 'sheets'}
+              onChange={(e) => onUpdate({ ...config, splitMode: e.target.value as 'sheets' | 'files' })}
+            >
+              <option value="sheets">多 Sheet（单文件）</option>
+              <option value="files">多文件（每值一个文件）</option>
+            </select>
+            <p className="text-[10px] text-gray-400 mt-1">
+              {(config.splitMode ?? 'sheets') === 'sheets'
+                ? `按 [${config.splitByColumns!.join(' + ')}] 生成多个 Sheet，合并为一个文件`
+                : `按 [${config.splitByColumns!.join(' + ')}] 各自导出一个 Excel 文件`}
+            </p>
+          </div>
+        )}
+      </div>
 
       <div className="border-t border-gray-200 pt-3">
         <button

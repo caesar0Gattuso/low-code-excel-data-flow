@@ -131,6 +131,10 @@ export interface ExcelOutputConfig {
   fileName: string
   /** 选择导出的列；undefined = 全部列 */
   selectedColumns?: string[]
+  /** 按哪些列的组合值拆分导出；为空数组或 undefined 则不拆分 */
+  splitByColumns?: string[]
+  /** 拆分模式：多 Sheet 合并为单文件 或 每个值单独一个文件 */
+  splitMode?: 'sheets' | 'files'
 }
 
 /** 所有算子配置的联合类型 */
