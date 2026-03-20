@@ -1,7 +1,9 @@
 import { useFlowStore } from '@/store/useFlowStore'
+import type { EdgeStyle } from '@/store/useFlowStore'
 import type { EngineRequest, EngineResponse, TemplateData, SerializedNode, SerializedEdge, FlowNodeData, ExcelOutputConfig } from '@/types'
 import { exportTemplate, importTemplate } from '@/utils/templateIO'
-import { exportToExcel } from '@/utils/excelUtils'
+import { exportToExcel, exportWithSplit } from '@/utils/excelUtils'
+import { calcAutoLayout, animateToLayout } from '@/utils/autoLayout'
 import { useRef, useCallback, useState } from 'react'
 import type { Node } from '@xyflow/react'
 import { HelpDialog } from './HelpDialog'
@@ -17,6 +19,8 @@ export function Toolbar() {
   const setEdges = useFlowStore((s) => s.setEdges)
   const setIsExecuting = useFlowStore((s) => s.setIsExecuting)
   const setExecutionResults = useFlowStore((s) => s.setExecutionResults)
+  const edgeStyle = useFlowStore((s) => s.edgeStyle)
+  const setEdgeStyle = useFlowStore((s) => s.setEdgeStyle)
   const importRef = useRef<HTMLInputElement>(null)
 
   const handleExecute = useCallback(() => {
@@ -129,9 +133,37 @@ export function Toolbar() {
     for (const [nodeId, data] of Object.entries(outputMap)) {
       const node = nodes.find((n) => n.id === nodeId)
       const cfg = node ? (node.data as FlowNodeData).config as ExcelOutputConfig : null
-      tables[cfg?.sheetName ?? nodeId] = data
+      const sheetName = cfg?.sheetName ?? nodeId
+      const splitCols = cfg?.splitByColumns?.length ? cfg.splitByColumns : null
+
+      if (splitCols) {
+        if (cfg?.splitMode === 'files') {
+          // 多文件模式：在合并下载时单独导出
+          exportWithSplit(data, splitCols, 'files', sheetName, cfg.fileName || 'final_result.xlsx')
+        } else {
+          // sheets 模式：展开到合并文件中
+          const validCols = splitCols.filter((c) => data.columns.includes(c))
+          if (validCols.length > 0) {
+            const groups = new Map<string, typeof data.rows>()
+            for (const row of data.rows) {
+              const key = validCols.map((c) => String(row[c] ?? '')).join('_')
+              if (!groups.has(key)) groups.set(key, [])
+              groups.get(key)!.push(row)
+            }
+            for (const [key, rows] of groups) {
+              tables[key.slice(0, 31)] = { columns: data.columns, rows }
+            }
+          } else {
+            tables[sheetName] = data
+          }
+        }
+      } else {
+        tables[sheetName] = data
+      }
     }
-    exportToExcel(tables, 'final_result.xlsx')
+    if (Object.keys(tables).length > 0) {
+      exportToExcel(tables, 'final_result.xlsx')
+    }
   }, [outputMap, nodes])
 
   const handleSeparateDownload = useCallback(() => {
@@ -144,9 +176,35 @@ export function Toolbar() {
       const cfg = node ? (node.data as FlowNodeData).config as ExcelOutputConfig : null
       const fileName = cfg?.fileName || 'final_result.xlsx'
       const sheetName = cfg?.sheetName || 'Result'
-      exportToExcel({ [sheetName]: data }, fileName)
+      const splitCols = cfg?.splitByColumns?.length ? cfg.splitByColumns : null
+
+      if (splitCols) {
+        exportWithSplit(data, splitCols, cfg?.splitMode ?? 'sheets', sheetName, fileName)
+      } else {
+        exportToExcel({ [sheetName]: data }, fileName)
+      }
     }
   }, [outputMap, nodes])
+
+  const handleAutoLayout = useCallback(() => {
+    if (nodes.length === 0) return
+    const { nodePositions, edgeWaypoints } = calcAutoLayout(nodes, edges)
+
+    // 先把 waypoints 写入边（不影响动画）
+    const edgeType = edgeStyle === 'routed' ? 'routed' : edgeStyle === 'smoothstep' ? 'smoothstep' : 'default'
+    const updatedEdges = edges.map((e) => ({
+      ...e,
+      type: edgeType,
+      data: {
+        ...((e.data as Record<string, unknown>) ?? {}),
+        waypoints: edgeWaypoints[e.id] ?? undefined,
+      },
+    }))
+    setEdges(updatedEdges)
+
+    // 再启动节点位置动画
+    animateToLayout(nodes, nodePositions, setNodes)
+  }, [nodes, edges, edgeStyle, setNodes, setEdges])
 
   return (
     <header className="h-12 bg-white border-b border-gray-200 flex items-center px-4 gap-3 flex-shrink-0">
@@ -160,6 +218,46 @@ export function Toolbar() {
       >
         {isExecuting ? '执行中...' : '▶ 执行'}
       </button>
+
+      <button
+        onClick={handleAutoLayout}
+        disabled={nodes.length === 0}
+        title="自动整理节点位置"
+        className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+      >
+        ⊞ 整理布局
+      </button>
+
+      {/* 连线模式三段式切换 */}
+      <div className="flex items-center rounded border border-gray-200 overflow-hidden text-[11px] font-medium">
+        {(
+          [
+            { key: 'bezier', label: '曲线' },
+            { key: 'smoothstep', label: '折线' },
+            { key: 'routed', label: '精确路由' },
+          ] as { key: EdgeStyle; label: string }[]
+        ).map(({ key, label }) => (
+          <button
+            key={key}
+            onClick={() => setEdgeStyle(key)}
+            title={
+              key === 'bezier'
+                ? '贝塞尔曲线（默认）'
+                : key === 'smoothstep'
+                  ? '直角折线，减少穿越'
+                  : 'Dagre 精确路由，点击「整理布局」后生效'
+            }
+            className={[
+              'px-2.5 py-1.5 transition-colors',
+              edgeStyle === key
+                ? 'bg-indigo-600 text-white'
+                : 'text-gray-600 hover:bg-gray-100',
+            ].join(' ')}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
       <button
         onClick={handleMergeDownload}
