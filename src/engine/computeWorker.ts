@@ -5,12 +5,15 @@ self.onmessage = (event: MessageEvent<EngineRequest>) => {
   const { nodes, edges, inputData } = event.data
 
   try {
-    const { previews, inputPreviews, outputs } = executeDAG(nodes, edges, inputData, (nodeId, status) => {
-      const progress: EngineResponse = { type: 'progress', progress: { nodeId, status } }
-      self.postMessage(progress)
-    })
+    const { previews, inputPreviews, outputs, edgeRowCounts, previewTotals } = executeDAG(
+      nodes, edges, inputData,
+      (nodeId, status, errorMsg) => {
+        const progress: EngineResponse = { type: 'progress', progress: { nodeId, status, errorMsg } }
+        self.postMessage(progress)
+      },
+    )
 
-    const result: EngineResponse = { type: 'result', previews, inputPreviews, outputs }
+    const result: EngineResponse = { type: 'result', previews, inputPreviews, outputs, edgeRowCounts, previewTotals }
     self.postMessage(result)
   } catch (err) {
     const errorMsg: EngineResponse = {

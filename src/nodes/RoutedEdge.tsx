@@ -1,4 +1,6 @@
-import { BaseEdge, EdgeLabelRenderer, type EdgeProps, getBezierPath } from '@xyflow/react'
+import { BaseEdge, EdgeLabelRenderer, type EdgeProps, getBezierPath, getSmoothStepPath } from '@xyflow/react'
+import { useState } from 'react'
+import { useFlowStore } from '@/store/useFlowStore'
 
 type Waypoint = { x: number; y: number }
 
@@ -51,35 +53,76 @@ export function RoutedEdge({
   markerEnd,
   style,
   label,
-  labelX,
-  labelY,
+  type,
+  selected,
 }: EdgeProps) {
+  const rowCount = useFlowStore((s) => s.edgeRowCountMap[id])
+  const [hovered, setHovered] = useState(false)
   const waypoints = (data as Record<string, unknown> | undefined)?.waypoints as Waypoint[] | undefined
 
   let edgePath: string
+  let midX: number
+  let midY: number
 
-  if (waypoints && waypoints.length > 0) {
-    // 拼接 source → waypoints → target 的完整路径
+  if (type === 'routed' && waypoints && waypoints.length > 0) {
     edgePath = waypointsToPath([{ x: sourceX, y: sourceY }, ...waypoints, { x: targetX, y: targetY }])
-  } else {
-    // 无 waypoints 时降级为默认贝塞尔
-    const [path] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition })
+    const mid = waypoints[Math.floor(waypoints.length / 2)]
+    midX = mid.x
+    midY = mid.y
+  } else if (type === 'smoothstep') {
+    const [path, mx, my] = getSmoothStepPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition })
     edgePath = path
+    midX = mx
+    midY = my
+  } else {
+    const [path, mx, my] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition })
+    edgePath = path
+    midX = mx
+    midY = my
+  }
+
+  const isActive = hovered || selected
+  const edgeStyle = {
+    ...style,
+    strokeWidth: isActive ? 3 : (style?.strokeWidth ?? 2),
+    stroke: isActive ? '#6366f1' : (style?.stroke ?? '#94a3b8'),
+    transition: 'stroke 0.15s, stroke-width 0.15s',
   }
 
   return (
     <>
-      <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={style} />
-      {label && (
-        <EdgeLabelRenderer>
+      {/* 透明加宽的可交互区域（便于鼠标 hover） */}
+      <path
+        d={edgePath}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={16}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+      />
+      <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={edgeStyle} />
+      <EdgeLabelRenderer>
+        {/* 自定义 label：使用路径中点定位 */}
+        {label && (
           <div
-            style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
+            style={{ transform: `translate(-50%, -50%) translate(${midX}px, ${midY}px)` }}
             className="absolute text-[10px] bg-white px-1 rounded pointer-events-none"
           >
             {label as string}
           </div>
-        </EdgeLabelRenderer>
-      )}
+        )}
+        {/* 行数 badge */}
+        {rowCount !== undefined && (
+          <div
+            style={{ transform: `translate(-50%, -50%) translate(${midX}px, ${midY}px)` }}
+            className="absolute pointer-events-none"
+          >
+            <span className="bg-slate-600 text-white text-[9px] font-medium px-1.5 py-0.5 rounded-full leading-none whitespace-nowrap">
+              {rowCount.toLocaleString()} 行
+            </span>
+          </div>
+        )}
+      </EdgeLabelRenderer>
     </>
   )
 }
