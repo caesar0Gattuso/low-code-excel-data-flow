@@ -5,7 +5,7 @@ import { NodeCategory } from '@/types'
 import { parseExcelFile } from '@/utils/excelUtils'
 import { exportToExcel, exportWithSplit } from '@/utils/excelUtils'
 
-export function SimpleModePanel() {
+export function SimpleModePanel({ hideHeader = false }: { hideHeader?: boolean }) {
   const nodes = useFlowStore((s) => s.nodes)
   const edges = useFlowStore((s) => s.edges)
   const inputDataMap = useFlowStore((s) => s.inputDataMap)
@@ -184,22 +184,24 @@ export function SimpleModePanel() {
 
   return (
     <div className="flex flex-col h-full bg-slate-50 overflow-auto">
-      {/* 顶部 Banner */}
-      <div className="flex items-center justify-between px-6 py-3 bg-indigo-600 text-white flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <span className="text-lg">⚡</span>
-          <div>
-            <p className="text-sm font-semibold">简洁执行模式</p>
-            <p className="text-xs text-indigo-200">上传数据文件，一键执行，下载结果</p>
+      {/* 顶部 Banner：hideHeader=true 时（RunPage 已有自己的 Header）隐藏 */}
+      {!hideHeader && (
+        <div className="flex items-center justify-between px-6 py-3 bg-indigo-600 text-white flex-shrink-0">
+          <div className="flex items-center gap-3">
+            <span className="text-lg">⚡</span>
+            <div>
+              <p className="text-sm font-semibold">简洁执行模式</p>
+              <p className="text-xs text-indigo-200">上传数据文件，一键执行，下载结果</p>
+            </div>
           </div>
+          <button
+            onClick={() => setViewMode('design')}
+            className="px-3 py-1.5 text-xs font-medium bg-white/20 hover:bg-white/30 rounded transition-colors"
+          >
+            ↩ 返回设计视图
+          </button>
         </div>
-        <button
-          onClick={() => setViewMode('design')}
-          className="px-3 py-1.5 text-xs font-medium bg-white/20 hover:bg-white/30 rounded transition-colors"
-        >
-          ↩ 返回设计视图
-        </button>
-      </div>
+      )}
 
       {/* 流程卡片区 */}
       <div className="flex-1 flex flex-col items-center justify-start gap-6 px-8 py-8 max-w-3xl w-full mx-auto">
